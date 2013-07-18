@@ -1,5 +1,4 @@
 
-
 1. OVERVIEW
 2. SYSTEM REQUIREMENTS
 3. GETTING STARTED WITH NVMKV
@@ -58,5 +57,7 @@ NOTE: NVMKV has been tested with VSL block sizes of 512 Bytes, 1kb, 2kb, and 4kb
 6. NVMKV SAMPLE CODE
 ====================
 
-There is a sample NVMKV application in the docs/example/ directory of the opennvm/nvmkv repo.
+There is a sample NVMKV application at the following link: https://github.com/opennvm/nvmkv/tree/master/docs/examples
+
+
 
