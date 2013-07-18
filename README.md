@@ -46,11 +46,11 @@ For specific details on each API within the NVMKV Store library, refer to the fo
 5. NVMKV MAXIMUM SUPPORTED LIMITS
 =================================
 <ul>
-<li> Maximum number of pools within a store, 1048576. <li>
-<li> Maximum key size, 128 bytes. <li>
-<li> Maximum value size, 1 MiB – 1KiB (1 MiB less 1 KiB). See Note below. <li>
-<li> Maximum number of iterators, 128. <li>
-<ul>
+<li> Maximum number of pools within a store, 1048576. </li>
+<li> Maximum key size, 128 bytes. </li>
+<li> Maximum value size, 1 MiB – 1KiB (1 MiB less 1 KiB). See Note below. </li>
+<li> Maximum number of iterators, 128. </li>
+</ul>
 
 NOTE: NVMKV has been tested with VSL block sizes of 512 Bytes, 1kb, 2kb, and 4kb.  If you are using 2kb or 4kb blocks, then the maximum value size will be 1Mb - block size.
 
