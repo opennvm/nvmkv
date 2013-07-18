@@ -1,3 +1,7 @@
+NVMKV
+=====
+
+
 <ol>
 <li> OVERVIEW </li>
 <li> SYSTEM REQUIREMENTS </li>
@@ -8,14 +12,14 @@
 </ol>
 
 1. OVERVIEW
-===========
+-----------
 
 The ioMemory Software Development Kit (SDK) provides Primitives and APIs so applications can take advantage of the ioMemory and the Virtual Storage Layer (VSL). Because ioMemory natively operates as a primitive key-value (KV) store, applications can eliminate significant amounts of source code by eliminating duplicate logic in the ioMemory VSL. At the most basic level, the VSL inserts blocks (values) at sparse addresses (keys). The ioMemory SDK NVMKV API library builds upon this concept by providing higher-level features that utilize internal VSL primitives for the NVMKV API.
 
 
 
 2. SYSTME REQUIREMENTS
-======================
+----------------------
 
 
 The iomemory SDK Primitives and APIs are only available for Linux OS Distributions.  Details? TBD ?
@@ -23,7 +27,7 @@ The iomemory SDK Primitives and APIs are only available for Linux OS Distributio
 
 
 3. GETTING STARTED WITH NVMKV
-=============================
+-----------------------------
 
 Applications can begin using the NVMKV API with the following steps, which are illustrated in the sample code included in this repository:
 
@@ -39,7 +43,7 @@ Applications can begin using the NVMKV API with the following steps, which are i
 
 
 4. NVMKV API USAGE
-==================
+------------------
 
 For specific details on each API within the NVMKV Store library, refer to the following link: http://opennvm.github.io/nvmkv-documents/Default.htm
 
@@ -48,7 +52,8 @@ For specific details on each API within the NVMKV Store library, refer to the fo
 
 
 5. NVMKV MAXIMUM SUPPORTED LIMITS
-=================================
+---------------------------------
+
 <ul>
 <li> Maximum number of pools within a store, 1048576. </li>
 <li> Maximum key size, 128 bytes. </li>
@@ -61,7 +66,7 @@ NOTE: NVMKV has been tested with VSL block sizes of 512 Bytes, 1kb, 2kb, and 4kb
 
 
 6. NVMKV SAMPLE CODE
-====================
+--------------------
 
 There is sample NVMKV application code at the following link: https://github.com/opennvm/nvmkv/tree/master/docs/examples.
 
