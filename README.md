@@ -1,4 +1,3 @@
-
 1. OVERVIEW
 2. SYSTEM REQUIREMENTS
 3. GETTING STARTED WITH NVMKV
@@ -38,7 +37,11 @@ Applications can begin using the NVMKV API with the following steps, which are i
 4. NVMKV API USAGE
 ==================
 
-For specific details on each API within the NVMKV Store library, refer to the following link ??TBD??.
+For specific details on each API within the NVMKV Store library, refer to the following link:
+
+http://opennvm.github.io/nvmkv-documents/Default.htm
+
+
 
 
 
@@ -57,7 +60,7 @@ NOTE: NVMKV has been tested with VSL block sizes of 512 Bytes, 1kb, 2kb, and 4kb
 6. NVMKV SAMPLE CODE
 ====================
 
-There is a sample NVMKV application at the following link: https://github.com/opennvm/nvmkv/tree/master/docs/examples
+There is sample NVMKV application code at the following link: https://github.com/opennvm/nvmkv/tree/master/docs/examples.
 
 
 
