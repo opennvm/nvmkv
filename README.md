@@ -14,7 +14,7 @@ WELCOME TO NVMKV
 1. OVERVIEW
 -----------
 
-The ioMemory Software Development Kit (SDK) provides Primitives and APIs so applications can take advantage of the ioMemory and the Virtual Storage Layer (VSL). Because ioMemory natively operates as a primitive key-value (KV) store, applications can eliminate significant amounts of source code by eliminating duplicate logic in the ioMemory VSL. At the most basic level, the VSL inserts blocks (values) at sparse addresses (keys). The ioMemory SDK NVMKV API library builds upon this concept by providing higher-level features that utilize internal VSL primitives for the NVMKV API.
+The ioMemory Software Development Kit (SDK) provides Primitives and APIs so applications can take advantage of the ioMemory and the Virtual Storage Layer (VSL). Because ioMemory natively operates as a primitive Key-Value (KV) store, applications can eliminate significant amounts of source code by eliminating duplicate logic in the ioMemory VSL. At the most basic level, the VSL inserts blocks (values) at sparse addresses (keys). The ioMemory SDK NVMKV API library builds upon this concept by providing higher-level features that utilize internal VSL primitives for the NVMKV API.
 
 
 
