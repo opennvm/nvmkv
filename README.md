@@ -37,9 +37,7 @@ Applications can begin using the NVMKV API with the following steps, which are i
 4. NVMKV API USAGE
 ==================
 
-For specific details on each API within the NVMKV Store library, refer to the following link:
-
-http://opennvm.github.io/nvmkv-documents/Default.htm
+For specific details on each API within the NVMKV Store library, refer to the following link: http://opennvm.github.io/nvmkv-documents/Default.htm
 
 
 
