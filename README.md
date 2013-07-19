@@ -18,7 +18,7 @@ The ioMemory Software Development Kit (SDK) provides Primitives and APIs so appl
 
 
 
-2. SYSTME REQUIREMENTS
+2. SYSTEM REQUIREMENTS
 ----------------------
 
 
