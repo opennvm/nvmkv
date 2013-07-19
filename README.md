@@ -38,7 +38,7 @@ Applications can begin using the NVMKV API with the following steps, which are i
         <li> If you are using the NVMKV API for the first time, then create a new NVMKV store on the raw ioMemory 
         device file system using nvm_kv_open(). Refer to the NVMKV API specifications for more detailed information: http://opennvm.github.io/nvmkv-documents/Default.htm 
         </li>
-	<li> If you are using an existing NVMKV store, then the nvm_kv_open() API validates the NVMKV store and returns a handle, which can be used in subsequent NVMKV store API operations as described in NVMKV Store API specifications. </li>
+	<li> If you are using an existing NVMKV store, then the nvm_kv_open() API validates the NVMKV store and returns a handle, which can be used in subsequent NVMKV store API operations as described in NVMKV Store API specifications: http://opennvm.github.io/nvmkv-documents/Default.htm </li>
 	<li> An NVMKV store may be further subdivided into pools. Pools provide a mechanism for aggregating groups of related key-value pairs. When utilizing a NVMKV store with pools, both the NVMKV store handle and pool id are passed as arguments to NVMKV store API operations. </li>
     </ol>	
 </ol>
