@@ -1,77 +1,41 @@
-WELCOME TO NVMKV
-================
+<strong>NOTE</strong>: NVMKV Source code will be posted on 30 Aug 2013.  Feel free to browse the API specifications, sample code, and benchmarking utility until then.
 
-
-<ol>
-<li> OVERVIEW </li>
-<li> SYSTEM REQUIREMENTS </li>
-<li> GETTING STARTED WITH NVMKV </li>
-<li> NVMKV API USAGE </li>
-<li> NVMKV MAXIMUM SUPPORTED LIMITS </li>
-<li> NVMKV SAMPLE CODE </li>
-</ol>
-
-1. OVERVIEW
------------
-
-The ioMemory Software Development Kit (SDK) provides Primitives and APIs so applications can take advantage of the ioMemory and the Virtual Storage Layer (VSL). Because ioMemory natively operates as a primitive Key-Value (KV) store, applications can eliminate significant amounts of source code by eliminating duplicate logic in the ioMemory VSL. At the most basic level, the VSL inserts blocks (values) at sparse addresses (keys). The ioMemory SDK NVMKV API library builds upon this concept by providing higher-level features that utilize internal VSL primitives for the NVMKV API.
-
-
-
-2. SYSTEM REQUIREMENTS
-----------------------
-
-
-The iomemory SDK Primitives and APIs are only available for Linux OS Distributions.  Details? TBD ?
-
-
-
-3. GETTING STARTED WITH NVMKV
------------------------------
-
-Applications can begin using the NVMKV API with the following steps, which are illustrated in the sample code included in this repository:
-https://github.com/opennvm/nvmkv/tree/master/docs/examples.
+#WELCOME TO NVMKV
 
 <ol>
-<li> Link with the ioMemory VSL SDK libraries. </li>
-<li> Perform one of the following operations: </li>
-    <ol>
-        <li> If you are using the NVMKV API for the first time, then create a new NVMKV store on the raw ioMemory 
-        device file system using nvm_kv_open(). Refer to the NVMKV API specifications for more detailed information: http://opennvm.github.io/nvmkv-documents/Default.htm 
-        </li>
-	<li> If you are using an existing NVMKV store, then the nvm_kv_open() API validates the NVMKV store and returns a handle, which can be used in subsequent NVMKV store API operations as described in NVMKV Store API specifications: http://opennvm.github.io/nvmkv-documents/Default.htm </li>
-	<li> An NVMKV store may be further subdivided into pools. Pools provide a mechanism for aggregating groups of related key-value pairs. When utilizing a NVMKV store with pools, both the NVMKV store handle and pool id are passed as arguments to NVMKV store API operations. </li>
-    </ol>	
+	<li> OVERVIEW </li>
+	<li> GETTING STARTED WITH NVMKV </li>
+	<li> NVMKV API REFERENCE </li>
+	<li> NVMKV SAMPLE CODE </li>
+	<li> NVMKV BENCHMARKING UTILITY </li>
 </ol>
 
+## 1. OVERVIEW
 
-4. NVMKV API USAGE
-------------------
+A Key-Value (KV) store is a type of NoSQL database used in high-performance, data-intensive, and scale-out
+environments. Persistent KV stores today use flash as a block device and are unable to fully leverage powerful
+capabilities that a Flash Translation Layer (FTL) offers, such as dynamic mapping, transaction persistence, and autoexpiry.
+Additionally, non-FTL-aware KV stores maintain some of the same metadata that are maintained by the
+underlying FTL, resulting in wasted memory.
+ 
+The NVMKV library, as described in the API specification, is a lightweight user space library that provides basic key-value operations
+such as get, put, delete, and advanced operations such as batch put/get/delete, pools, iterator, and lookup. The library
+leverages highly-optimized primitives such as sparse addressing, atomic-writes, Persistent TRIM, etc., provided by the
+underlying FTL. The strong consistency guarantees of the underlying NVM Primitives allow KV to achieve high performance
+combined with ACID compliance.
 
-For specific details on each API within the NVMKV Store library, refer to the following link: http://opennvm.github.io/nvmkv-documents/Default.htm
+## 2. GETTING STARTED WITH NVMKV
 
+See the 'DIY On-Premises -> NVMKV' section under http://opennvm.github.io/get-started.html
 
+## 3. NVMKV API REFERENCE
 
+http://opennvm.github.io/nvmkv-documents/Default.htm
 
+## 4. NVMKV SAMPLE CODE
 
-5. NVMKV MAXIMUM SUPPORTED LIMITS
----------------------------------
+https://github.com/opennvm/nvmkv/tree/master/docs/examples/
 
-<ul>
-<li> Maximum number of pools within a store, 1048576. </li>
-<li> Maximum key size, 128 bytes. </li>
-<li> Maximum value size, 1 MiB – 1KiB (1 MiB less 1 KiB). See Note below. </li>
-<li> Maximum number of iterators, 128. </li>
-</ul>
+## 6. NVMKV BENCHMARKING UTILITY
 
-NOTE: NVMKV has been tested with VSL block sizes of 512 Bytes, 1kb, 2kb, and 4kb.  If you are using 2kb or 4kb blocks, then the maximum value size will be 1Mb - block size.
-
-
-
-6. NVMKV SAMPLE CODE
---------------------
-
-There is sample NVMKV application code at the following link: https://github.com/opennvm/nvmkv/tree/master/docs/examples.
-
-
-
+https://github.com/opennvm/nvmkv/tree/master/test
