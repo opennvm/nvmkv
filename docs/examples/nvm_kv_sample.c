@@ -94,7 +94,7 @@ int main(int argc, char **argv)
         goto test_exit;
     }
     printf("nvm_kv_open: success\n");
-    printf("\tcreated kvstore, kv_id = %d\n", kv_id);
+    printf("\tcreated KV store, kv_id = %d\n", kv_id);
 
     /*********************/
     /* Set the KV Expiry */
@@ -321,7 +321,7 @@ int main(int argc, char **argv)
 
 
     /****************************/
-    /* Release the iterater id  */
+    /* Release the iterator id  */
     /****************************/
     ret = nvm_kv_iteration_end(kv_id, it_id);
     if (ret < 0)

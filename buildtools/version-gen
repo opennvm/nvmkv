@@ -1,0 +1,33 @@
+#!/bin/bash
+
+if [ $# -ne 1 ]; then
+    echo "Usage: ${0##*/} <version-file>" 1>&2
+    exit 1
+fi
+
+version_file=$1
+version=
+if test -f $version_file; then
+    version=`cat $version_file`
+    case $version in
+        [0-9]*) ;;
+        *) version= ;;
+    esac
+fi
+
+if test -z "$version"; then
+    echo "${0##*/} is corrupted" 1>&2
+    # from git tags now
+    if version=`git describe --match='v*' HEAD 2> /dev/null` &&
+        case $v in
+            v[0-9]*) ;;
+            *) exit 1;;
+        esac
+    then
+        version=`echo "$version" | sed 's/-.*//' | sed 's/^v//'`
+    else
+        version=UNKOWN
+    fi
+fi
+
+echo $version | tr -d '\n'
