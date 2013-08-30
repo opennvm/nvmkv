@@ -28,7 +28,7 @@ See the 'DIY On-Premises -> NVMKV' section under http://opennvm.github.io/get-st
 
 ## 3. NVMKV API REFERENCE
 
-http://opennvm.github.io/nvmkv-documents/Default.htm
+http://opennvm.github.io/nvmkv-documents
 
 ## 4. NVMKV SAMPLE CODE
 
