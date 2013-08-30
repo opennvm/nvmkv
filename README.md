@@ -1,5 +1,3 @@
-<strong>NOTE</strong>: NVMKV Source code will be posted on 30 Aug 2013.  Feel free to browse the API specifications, sample code, and benchmarking utility until then.
-
 #WELCOME TO NVMKV
 
 <ol>

@@ -36,7 +36,7 @@ extern "C"
 #include <libxml/xpath.h>
 #include <libxml/tree.h>
 
-//static member variable defination
+//static member variable definition
 KeyList* KeyList::m_pInstance = NULL;
 int KeyList::m_incrCounter = 0;
 
@@ -96,7 +96,7 @@ end_main:
     return ret_code;
 }
 //
-//@openKvContainer - Open the kv store container
+//@openKvContainer - Open the KV store container
 //
 bool KvTest::openKvContainer(KvOptions &options)
 {
@@ -117,7 +117,7 @@ bool KvTest::openKvContainer(KvOptions &options)
     return true;
 }
 //
-//@closeKvContainer  - close the kv store container
+//@closeKvContainer  - close the KV store container
 //
 void KvTest::closeKvContainer(KvOptions &options)
 {
@@ -133,7 +133,7 @@ void KvTest::closeKvContainer(KvOptions &options)
     }
 }
 //
-//@testPerf - perf testing of kv apis nvm_kv_get, nvm_kv_put.
+//@testPerf - perf testing of KV store APIs nvm_kv_get, nvm_kv_put.
 //            functionality testing
 //
 void KvTest::testPerf(KvOptions &options)
@@ -151,13 +151,12 @@ void KvTest::testPerf(KvOptions &options)
     if (job != NULL && strcmp(job, "kv_open"))
     {
         fprintf(stderr, "The first job must be \"kv_open\" in order to open "
-		"the kv store.\n");
+		"the KV store.\n");
         return;
     }
     while (job != NULL)
     {
         KvWorkerThreads thread_inst;
-        int glb_expiry = 10;
 
         thread_inst.setOptions(&options);
         if (strcmp(job, "kv_open") == 0)
@@ -187,11 +186,11 @@ void KvTest::testPerf(KvOptions &options)
                     return;
                 }
             }
-            //try to set expiry after opening kv store, in case
+            //try to set expiry after opening KV store, in case
             //expiry is set to global expiry mode
             if (options.m_expiry == KV_GLOBAL_EXPIRY)
             {
-                if (KvApi::testSetExpiry(glb_expiry) < 0)
+                if (KvApi::testSetExpiry() < 0)
                 {
                     return;
                 }
@@ -207,7 +206,7 @@ void KvTest::testPerf(KvOptions &options)
         }
         if (strcmp(job, "kv_get_store_info") == 0)
         {
-            //prints kv store information
+            //prints KV store information
             if (KvApi::testGetKvStoreInfo() < 0)
             {
                 return;
@@ -260,13 +259,6 @@ void KvTest::testPerf(KvOptions &options)
                 return;
             }
         }
-        if (strcmp(job, "kv_destroy") == 0)
-        {
-            if (KvApi::testKvDestroy() < 0)
-            {
-                return;
-            }
-        }
         if (strcmp(job, "kv_delete_all") == 0)
         {
             if (KvApi::testDeleteAllKeys() < 0)
@@ -294,7 +286,7 @@ void KvTest::testPerf(KvOptions &options)
     return;
 }
 //
-//@testFunctionality - test all functionality of kv store
+//@testFunctionality - test all functionality of KV store
 //
 bool KvTest::testFunctionality()
 {
@@ -352,11 +344,11 @@ bool KvTest::testSmoke(KvOptions &options)
     kv_id = nvm_kv_open(fd, version, max_pools, 0);
     if (kv_id < 0)
     {
-        fprintf(stderr, "could not create kv store errno %d\n", errno);
+        fprintf(stderr, "could not create KV store errno %d\n", errno);
         ret_val =  false;
         goto end_smoke;
     }
-    fprintf(stdout, "successfully open kvstore, kv_id = %d\n", kv_id);
+    fprintf(stdout, "successfully open KV store, kv_id = %d\n", kv_id);
     //retrieve KV store information
     ret = nvm_kv_get_store_info(kv_id, &store_info);
     if (ret < 0)
@@ -368,7 +360,7 @@ bool KvTest::testSmoke(KvOptions &options)
     }
     else
     {
-        fprintf(stdout, "kv store information:\n");
+        fprintf(stdout, "KV store information:\n");
         fprintf(stdout, "   version: %u\n", store_info.version);
         fprintf(stdout, "   num_pools: %u\n", store_info.num_pools);
         fprintf(stdout, "   max_pools: %u\n", store_info.max_pools);
@@ -392,14 +384,14 @@ bool KvTest::testSmoke(KvOptions &options)
     }
     fprintf(stdout, "successfully created pool with pool_id = %d\n", pool_id);
 
-    key_str = (char *) malloc(sizeof(char) * key_len);
+    key_str = new(std::nothrow) char[key_len];
     if (!key_str)
     {
         fprintf(stderr, "memory allocation failed\n");
         ret_val =  false;
         goto end_smoke;
     }
-    key_str2 = (char *) malloc (sizeof(char) * key_len);
+    key_str2 = new(std::nothrow) char[key_len];
     if (!key_str2)
     {
         fprintf(stderr, "memory allocation failed\n");
@@ -469,7 +461,7 @@ bool KvTest::testSmoke(KvOptions &options)
     }
     fprintf(stdout, "nvm_kv_exists: key exists\n");
 
-   ret = nvm_kv_put(kv_id, pool_id, (nvm_kv_key_t *) key_str2,
+    ret = nvm_kv_put(kv_id, pool_id, (nvm_kv_key_t *) key_str2,
                 strlen((char *) key_str2), value_str, value_len, 0, false, 0);
     if (ret < 0)
     {
@@ -489,7 +481,7 @@ bool KvTest::testSmoke(KvOptions &options)
     }
     fprintf(stdout, "nvm_kv_begin succeeded\n");
 
-    key = (char *)malloc(strlen((char *) key_str));
+    key = new(std::nothrow) char[strlen((char *) key_str)];
     if (!key)
     {
         fprintf(stderr, "memory allocation failed\n");
@@ -525,7 +517,7 @@ bool KvTest::testSmoke(KvOptions &options)
     ret = nvm_kv_iteration_end(kv_id, it_id);
     if (ret < 0)
     {
-        fprintf(stderr, "nvm_kv_iteartion_end failed errno %d\n", errno);
+        fprintf(stderr, "nvm_kv_iteration_end failed errno %d\n", errno);
         ret_val =  false;
         goto end_smoke;
     }
@@ -585,7 +577,7 @@ bool KvTest::testSmoke(KvOptions &options)
             ret_val =  false;
             goto end_smoke;
         }
-        if (pool_info.pool_status == UNKNOWN)
+        if (pool_info.pool_status == POOL_NOT_IN_USE)
         {
             fprintf(stdout, "pool deleted completely pool status = %d\n",
                     pool_info.pool_status);
@@ -605,15 +597,15 @@ bool KvTest::testSmoke(KvOptions &options)
     fprintf(stdout, "nvm_kv_close succeeded\n");
 
 end_smoke:
-    free(key);
+    delete[] key;
     free(value_str);
-    free(key_str);
-    free(key_str2);
+    delete[] key_str;
+    delete[] key_str2;
     close(fd);
     return ret_val;
 }
 //
-//member function definations for KvApi
+//member function definitions for KvApi
 //
 
 //
@@ -642,7 +634,7 @@ int KvApi::testKvOpen(int fd)
 
 }
 //
-//@testKvClose  - closes kv store
+//@testKvClose  - closes KV store
 //
 int KvApi::testKvClose()
 {
@@ -654,25 +646,13 @@ int KvApi::testKvClose()
     return 0;
 }
 //
-//@testKvDestroy  - destroys kv store
-//
-int KvApi::testKvDestroy()
-{
-    if (nvm_kv_destroy(m_kvId) < 0)
-    {
-        fprintf(stderr, "nvm_kv_destory failed errno %d\n", errno);
-        return -1;
-    }
-    return 0;
-}
-//
-//@testPoolCreate  - creates kv store pools
+//@testPoolCreate  - creates KV store pools
 //
 int KvApi::testPoolCreate()
 {
     if (m_options.m_noPools == 0)
     {
-        fprintf(stderr, "no pools to be created is 0\n");
+        fprintf(stderr, "number of pools to be created is 0\n");
         return -1;
     }
 
@@ -710,8 +690,7 @@ int KvApi::testPoolTags(int pool_count, int kv_id)
         kv_id = m_kvId;
     }
 
-    pool_md = (nvm_kv_pool_metadata_t *)
-        malloc(sizeof(nvm_kv_pool_metadata_t) * pool_count);
+    pool_md = new(std::nothrow) nvm_kv_pool_metadata_t[pool_count];
     if (!pool_md)
     {
         return -1;
@@ -736,10 +715,10 @@ int KvApi::testPoolTags(int pool_count, int kv_id)
         }
         k++;
     }
-    free (pool_md);
+    delete[] pool_md;
     return 0;
 }
-//@testDeleteAllPools  - deletes all pools in the kvstore
+//@testDeleteAllPools  - deletes all pools in the KV store
 //
 int KvApi::testDeleteAllPools(int oneTimeDeletion)
 {
@@ -768,7 +747,7 @@ int KvApi::testDeleteAllPools(int oneTimeDeletion)
     return ret_code;
 }
 //
-//@testDeletePool  - deletes a pool in the kvstore
+//@testDeletePool  - deletes a pool in the KV store
 //
 int KvApi::testDeletePool(int pool_id)
 {
@@ -792,7 +771,7 @@ int KvApi::testDeletePool(int pool_id)
         {
             return ret_code;
         }
-        if (ret_code == UNKNOWN)
+        if (ret_code == POOL_NOT_IN_USE)
         {
             break;
         }
@@ -801,7 +780,7 @@ int KvApi::testDeletePool(int pool_id)
     return 0;
 }
 //
-//@testGetKvStoreInfo  - gets kv store info
+//@testGetKvStoreInfo  - gets KV store info
 //
 int KvApi::testGetKvStoreInfo()
 {
@@ -816,7 +795,7 @@ int KvApi::testGetKvStoreInfo()
     }
     else
     {
-        fprintf(stdout, "kv store information:\n");
+        fprintf(stdout, "KV store information:\n");
         fprintf(stdout, "   version: %u\n", store_info.version);
         fprintf(stdout, "   num_pools: %u\n", store_info.num_pools);
         fprintf(stdout, "   max_pools: %u\n", store_info.max_pools);
@@ -883,11 +862,11 @@ int KvApi::testDeleteAllKeys()
 //
 //tests setting of global expiry
 //
-int KvApi::testSetExpiry(int glb_expiry)
+int KvApi::testSetExpiry()
 {
     int ret_code = 0;
 
-    ret_code = nvm_kv_set_global_expiry(m_kvId, glb_expiry);
+    ret_code = nvm_kv_set_global_expiry(m_kvId, m_options.m_expiryInSecs);
     if (ret_code < 0)
     {
         fprintf(stderr, "nvm_kv_set_global_expiry failed, errno %d\n", errno);
@@ -1057,10 +1036,10 @@ int KvApi::testBatchApi(int job, int count, int index)
 
     KeyList::instance()->resetCounter();
     m_timeDelta[index] = 0;
-    iov = (nvm_kv_iovec_t *) malloc(iovcnt * sizeof(nvm_kv_iovec_t));
+    iov = new(std::nothrow) nvm_kv_iovec_t[iovcnt];
     if (iov == NULL)
     {
-        fprintf(stderr, "malloc failed\n");
+        fprintf(stderr, "failed to create nvm_kv_iovec_t object\n");
         ret_code = -1;
         goto end_test_batch_api;
     }
@@ -1124,7 +1103,7 @@ int KvApi::testBatchApi(int job, int count, int index)
 
 end_test_batch_api:
 
-    free(iov);
+    delete[] iov;
     free(batch_buf);
     return ret_code;
 }
@@ -1166,10 +1145,10 @@ int KvApi::testIterator(int index)
         ret_code = -1;
         goto end_test_iterator;
     }
-    key = (nvm_kv_key_t *) malloc(M_MAX_KEY_SIZE * sizeof(nvm_kv_key_t));
+    key = new(std::nothrow) nvm_kv_key_t[M_MAX_KEY_SIZE];
     if (key == NULL)
     {
-        fprintf(stderr, "malloc failed\n");
+        fprintf(stderr, "failed to create nvm_kv_key_t object\n");
         ret_code = -1;
         goto end_test_iterator;
     }
@@ -1208,7 +1187,7 @@ int KvApi::testIterator(int index)
                                       false, &key_info);
                 if (memcmp(value, value_cmp_buf, value_size) != 0)
                 {
-                    fprintf(stderr, "kv_get_curent does not match \
+                    fprintf(stderr, "kv_get_current does not match \
                             kv_get!\n");
                     ret_code = -1;
                     goto end_test_iterator;
@@ -1243,7 +1222,7 @@ int KvApi::testIterator(int index)
     } while (i < m_options.m_noPools);
 
 end_test_iterator:
-    free(key);
+    delete[] key;
     free(value);
     free(value_cmp_buf);
     return ret_code;
@@ -1349,7 +1328,7 @@ int64_t KvApi::getMicroTime(void)
     return rc;
 }
 //
-//@printStats   - prints statistcs for perf tests
+//@printStats   - prints statistics for perf tests
 //
 void KvApi::printStats(int job)
 {
@@ -1434,7 +1413,7 @@ void KvApi::printStats(int job)
     }
 }
 //
-//member function defination for KeyList
+//member function definition for KeyList
 //
 
 //
@@ -1465,7 +1444,7 @@ void KeyList::generateKey(nvm_kv_key_t *key, int key_len)
 void KeyList::fillKeyList()
 {
     //if number of keys is greater than 10 million
-    //generate keys incrementaly
+    //generate keys incrementally
     for (int i = 0; i < m_numbThreads; i++)
     {
         for (int j = 0; j < (m_numbKeys / m_numbThreads); j++)
@@ -1874,8 +1853,7 @@ bool KvOptions::parseConfFile(char *file_name)
                         goto end_parse;
                     }
                 }
-                if (strcmp((const char*) attr->name, "expiryInSecs") == 0 &&
-                    m_expiry == KV_ARBITRARY_EXPIRY)
+                if (strcmp((const char*) attr->name, "expiryInSecs") == 0)
                 {
                     //store per key expiry only for arbitrary expiry
                     m_expiryInSecs = atoi((const char*)

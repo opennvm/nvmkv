@@ -52,7 +52,7 @@ class KvOptions
 {
     public:
     //
-    //@contructor
+    //@constructor
     //
     KvOptions()
     {
@@ -95,8 +95,8 @@ class KvOptions
     bool usage(const char *name);
     //
     //member constants
-    //@M_MAX_STRING_LEN    - maximum length of charecter array
-    //@M_KV_VERSION_STRING - kv API version
+    //@M_MAX_STRING_LEN    - maximum length of character array
+    //@M_KV_VERSION_STRING - KV store API version
     //
     static const int M_MAX_STR_SIZE = 512;
     static const char M_KV_VERSION_STRING[M_MAX_STR_SIZE];
@@ -104,7 +104,7 @@ class KvOptions
     //@member variables
     //    m_deviceName       - device name
     //    m_valSize          - value size in terms of sectors or bytes
-    //    m_numIos           - total number of ios (kv count)
+    //    m_numIos           - total number of ios (key/value pair count)
     //    m_verify           - if set to true kv_get needs to be verified
     //    m_threads          - number of thread
     //    m_smokeTest        - if set to true smoke tests are executed
@@ -117,7 +117,7 @@ class KvOptions
     //    m_unitsInSector    - if true value size is in units of sectors
     //    m_numIovs          - number of vectors (# of puts, gets) in each
     //                         batch request
-    //    m_mixedLoad        - if set to true performace testing is done by
+    //    m_mixedLoad        - if set to true performance testing is done by
     //                         executing mixed kv_get, kv_put, kv_exists load
     //    m_noPools          - number of pools
     //    m_maxPools         - Maximum number of pools
@@ -133,8 +133,8 @@ class KvOptions
     //                         less than a sector
     //   m_confFile          - path to config file
     //   m_jobs              - jobs that needs to be executed in order, each
-    //                         job name is seperated by ','
-    //   m_apiVersion        - version of the kv apis
+    //                         job name is separated by ','
+    //   m_apiVersion        - version of the KV store APIs
     //
     char m_confFile[M_MAX_STR_SIZE];
     char m_deviceName[M_MAX_STR_SIZE];
@@ -164,7 +164,7 @@ class KvOptions
 };
 //
 //@KeyList               - class used to generate random keys and iterate
-//                         through the list.For multi threads vectors of vector
+//                         through the list. For multiple threads, vector of vectors
 //                         is generated, so that each thread has its own vector
 //                         of keys.
 //
@@ -182,7 +182,7 @@ class KeyList
         void fillKeyList();
         //
         //@generateKeys - random key of random size is generated
-        //@key          - input, memory adress where key needs to be generated
+        //@key          - input, memory address where key needs to be generated
         //@key_len      - key length
         //@return       - none
         //
@@ -192,7 +192,7 @@ class KeyList
         //@i            - index for one vector within vectors of vector
         //@j            - index within vector
         //@key_len      - output, length of the key that is retrieved
-        //@inc_counter  - input, variable which stores key incase key is
+        //@inc_counter  - input, variable which stores key in case key is
         //                generated incrementally
         //@return       - memory address of the key
         //
@@ -234,7 +234,7 @@ class KeyList
         //   m_keySize       - vector of key size
         //   m_pInstance     - instance of the class
         //   m_incremental   - if set to true keys are generated
-        //                     incrementaly
+        //                     incrementally
         //   m_incrCounter   - static counter to generate keys
         //   m_mtx           - mutex variable used for thread safety
         int m_numbKeys;
@@ -288,7 +288,7 @@ class KvWorkerThreads
         //
         //@constants
         //M_MAX_THREADS        - maximum threads that can be created for multi
-        //                       threading kv apis
+        //                       threading KV store APIs
         //
         static const uint32_t M_MAX_THREADS = 256;
         //@member_variables
@@ -300,19 +300,19 @@ class KvWorkerThreads
         static int m_job;
 };
 //
-//@KvTest     - encapsulates all functionality required to test kv store
+//@KvTest     - encapsulates all functionality required to test KV store
 //
 class KvTest
 {
     public:
     //
-    //@openKvContainer - Open the kv store container
+    //@openKvContainer - Open the KV store container
     //@options         - command line param
     //@return          - true on success and false on failure
     //
     static bool openKvContainer(KvOptions &options);
     //
-    //@closeKvContainer - close the kv store container
+    //@closeKvContainer - close the KV store container
     //@options          - command line param
     //@return           - none
     //
@@ -325,12 +325,12 @@ class KvTest
     //
     static void testPerf(KvOptions &options);
     //
-    //@testFunctionality - test all functionality of kv store
+    //@testFunctionality - test all functionality of KV store
     //@return            - return true if all test passes else return false
     //
     static bool testFunctionality();
     //
-    //@testSmoke      - perform smoke test all functionality of kv store
+    //@testSmoke      - perform smoke test for all functionality of KV store
     //@options        - command line param
     //@return         - return true if all test passes else return false
     //
@@ -343,7 +343,7 @@ class KvTest
 };
 
 //
-//@KvApi     - encapsulates all kv store APIs like nvm_kv_put, nvm_kv_get
+//@KvApi     - encapsulates all KV store APIs like nvm_kv_put, nvm_kv_get
 //
 class KvApi
 {
@@ -356,36 +356,31 @@ class KvApi
         m_options = options;
     }
     //
-    //@testKvOpen  - opens a kv store
+    //@testKvOpen  - opens a KV store
     //@return      - 0 on success and -1 on failure
     //
     static int testKvOpen(int fd);
     //
-    //@testKvClose    - closes kv store
+    //@testKvClose    - closes KV store
     //@return         - 0 on success and -1 on failure
     //
     static int testKvClose();
     //
-    //@testKvDestroy  - destroys kv store
-    //@return         - 0 on success and -1 on failure
-    //
-    static int testKvDestroy();
-    //
-    //@testPoolCreate  - creates kv store pools
+    //@testPoolCreate  - creates KV store pools
     //@return          - 0 on success and -1 on failure
     //
     static int testPoolCreate();
     //
     //@testPoolTags    - fetches pool tags and make sure if the tags are
     //                   correct
-    //@pool_count      - number of pool_tags that needs to be retreived
+    //@pool_count      - number of pool_tags that needs to be retrieved
     //@kv_id           - default value is -1, if kv_id not set use member
     //                   variable
     //@return          - 0 on success and -1 on failure
     //
     static int testPoolTags(int pool_count, int kv_id = -1);
     //
-    //@testGetKvStoreInfo  - gets kv store info
+    //@testGetKvStoreInfo  - gets KV store info
     //@return              - 0 on success and -1 on failure
     //
     static int testGetKvStoreInfo();
@@ -401,13 +396,13 @@ class KvApi
     //
     static int testGetPoolInfo(int pool_id);
     //
-    //@testDeleteAllPools - deletes all pools in the kvstore
+    //@testDeleteAllPools - deletes all pools in the KV store
     //@oneTimeDeletion    - if set to true deletes all pool at one time
     //@return             - returns 0 on success and -1 on failure
     //
     static int testDeleteAllPools(int oneTimeDeletion);
     //
-    //@testDeletePool  - deletes a pool in the kvstore
+    //@testDeletePool  - deletes a pool in the KV store
     //@pool_id         - pool_id of the pool
     //@return          - returns 0 on success and -1 on failure
     //
@@ -419,22 +414,21 @@ class KvApi
     static int testDeleteAllKeys();
     //
     //@testSetExpiry - tests the setting of global expiry
-    //@glb_expiry    - global expiry value
     //@return        - returns 0 on success and -1 on failure
     //
-    static int testSetExpiry(int glb_expiry);
+    static int testSetExpiry();
     //
     //@testBasicApi - test kv_put, kv_get, kv_exists, kv_delete
-    //@job          - type of api that needs to be tested
-    //@count        - number of times same api call needs to be executed
+    //@job          - type of API that needs to be tested
+    //@count        - number of times same API call needs to be executed
     //@index        - index into key list based on the thread executing
     //@return       - returns 0 on success and -1 on failure
     //
     static int testBasicApi(int job, int count, int index);
     //
     //@testBatchApi - test kv_batch_put
-    //@job          - type of api that needs to be tested
-    //@count        - number of times same api call needs to be executed
+    //@job          - type of API that needs to be tested
+    //@count        - number of times same API call needs to be executed
     //@index        - index into key list based on the thread executing
     //@return       - returns 0 on success and -1 on failure
     //
@@ -446,7 +440,7 @@ class KvApi
     //
     static int testIterator(int index);
     //
-    //@printStats   - prints statistcs for perf tests
+    //@printStats   - prints statistics for perf tests
     //@return       - none
     //
     static void printStats(int job);
@@ -465,7 +459,7 @@ class KvApi
     //
     static void initializePoolVector();
     //
-    //@getMicroTime   - gets currernt time in micro seconds
+    //@getMicroTime   - gets current time in micro seconds
     //@return         - time in ms
     //
     static int64_t getMicroTime(void);
@@ -478,8 +472,8 @@ class KvApi
     //@constants
     //@M_USEC_PER_SEC   - used to convert ms data to seconds data
     //@M_MAX_THREADS    - maximum threads that can be created for multi
-    //                    threading kv apis
-    //@M_MAX_KEY_SIZE   - maximum key lenght
+    //                    threading KV store APIs
+    //@M_MAX_KEY_SIZE   - maximum key length
     //@M_NSEC_PER_PSEC  - used to convert ns data to seconds data
     //
     static const uint32_t M_USEC_PER_SEC = 1000000;
@@ -490,11 +484,11 @@ class KvApi
     //@member_variables
     //  m_timeDelta        - array that stores the time delta for each
     //                       operation for each thread
-    //  m_kvId              - kv store id, which is created at initial
+    //  m_kvId              - KV store id, which is created at initial
     //                        call to kv_create
     //  m_sectorSize        - sector size of the IO memory
     //  m_poolIdsVector     - vector of pool ids in a map, each thread will
-    //                        have a vector of poolIds that are created by
+    //                        have a vector of pool ids that are created by
     //                        them
     //  m_options           - options that are obtained by parsing config file
     //

@@ -6,11 +6,11 @@ LDFLAGS= -L/usr/lib/nvm -L/usr/lib/fio -lvsl -lnvmkv -lnvm-primitives -ldl -lpth
 
 CPPFLAGS=-std=gnu99
 
-all: kv_sample
-	sudo LD_LIBRARY_PATH=/usr/lib/nvm ./kv_sample "/dev/fioc"
+all: nvm_kv_sample
+        sudo LD_LIBRARY_PATH=/usr/lib/nvm ./nvm_kv_sample "/dev/fioa"
 
-kv_sample: kv_sample.o
-	$(CC) -o $@ $< $(LDFLAGS)
+nvm_kv_sample: nvm_kv_sample.o
+        $(CC) -o $@ $< $(LDFLAGS)
 
 clean:
-	rm -f *.o kv_sample
+        rm -f *.o nvm_kv_sample
