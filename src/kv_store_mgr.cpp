@@ -1373,6 +1373,8 @@ int NVM_KV_Store_Mgr::kv_get_pool_metadata(int kv_id,
     NVM_KV_Store *kv_store = NULL;
     NVM_KV_Pool_Mgr *pool_mgr = NULL;
     int pool_id = start_count;
+    int num_pools = 0;
+    int i = 0;
 
     if (!pool_md)
     {
@@ -1387,8 +1389,10 @@ int NVM_KV_Store_Mgr::kv_get_pool_metadata(int kv_id,
         errno = -NVM_ERR_INVALID_INPUT;
         return -1;
     }
+    num_pools = kv_store->get_store_metadata()->total_no_pools;
     pool_mgr = kv_store->get_pool_mgr();
-    for (uint32_t i = 0; i < count; i++)
+
+    for ( ;i < count && pool_id <= num_pools; i++)
     {
         pool_md[i].pool_id = pool_id++;
         if (pool_mgr->get_pool_tag(pool_md[i].pool_id, &pool_md[i].pool_tag) <
@@ -1398,7 +1402,7 @@ int NVM_KV_Store_Mgr::kv_get_pool_metadata(int kv_id,
             return -1;
         }
     }
-    return NVM_SUCCESS;
+    return i;
 }
 //
 //Deletes all the keys on the drive
@@ -1573,17 +1577,13 @@ int NVM_KV_Store_Mgr::kv_delete_internal(uint64_t del_lba,
     uint64_t num_sect = 0;
     uint32_t pool_bits = 0;
     nvm_kv_store_device_t *kv_device = NULL;
-    uint32_t sector_size = 0;
-    uint64_t discard_len = 0;
 
     kv_device = kv_store->get_store_device();
-    sector_size = kv_store->get_sector_size();
     pool_bits = kv_store->get_layout()->get_pool_bits();
     num_sect = kv_store->get_del_sec_count();
-    discard_len = num_sect * sector_size;
     del_lba = nvm_kv_mask_lsb(del_lba, pool_bits);
 
-    ret_code = kv_del_range(kv_device, del_lba, discard_len);
+    ret_code = kv_del_range(kv_device, del_lba, num_sect);
 
     return ret_code;
 }
@@ -1609,6 +1609,7 @@ int NVM_KV_Store_Mgr::kv_del_wrapper(int id)
     //Discards will be issued from the beginning of the user data on
     //complete device.
     start_sector = kv_store->get_layout()->get_data_start_lba();
+    //device size in sectors
     device_size  = (kv_store->get_layout()->get_kv_len() - start_sector);
 
     ret_code = kv_del_range(kv_device, start_sector, device_size);
@@ -1625,7 +1626,7 @@ int NVM_KV_Store_Mgr::kv_del_wrapper(int id)
 //
 int NVM_KV_Store_Mgr::kv_del_range(nvm_kv_store_device_t *kv_device,
 				   uint64_t del_lba,
-                                   uint64_t discard_len)
+                                   uint64_t discard_sec)
 {
     int ret_code = 0;
     nvm_kv_store_capabilities_t *capabilities = &kv_device->capabilities;
@@ -1643,7 +1644,7 @@ int NVM_KV_Store_Mgr::kv_del_range(nvm_kv_store_device_t *kv_device,
         return -NVM_ERR_OUT_OF_MEMORY;
     }
     //remaining length is in bytes
-    remaining_len = discard_len * sector_size;
+    remaining_len = discard_sec * sector_size;
     max_trim_size_per_iov = capabilities->nvm_atomic_write_multiplicity *
                             capabilities->nvm_max_trim_size_per_iov;
     do

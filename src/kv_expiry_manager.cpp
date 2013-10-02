@@ -27,6 +27,7 @@ NVM_KV_Expiry_Manager::NVM_KV_Expiry_Manager(int num_threads,
     NVM_KV_Store *kv_store) : NVM_KV_Scanner(num_threads, kv_store)
 {
     m_last_seen_capacity = 0.0;
+    m_no_expire_count = 0;
 }
 //
 //destroys expiry manager
@@ -152,7 +153,9 @@ bool NVM_KV_Expiry_Manager::expire_keys()
 {
     nvm_capacity_t capacity_info;
     int ret_code = 0;
+    bool ret_val = false;
     double percent_used = 0;
+
     //check the % used of the physical capacity
     ret_code = nvm_get_capacity(get_store()->get_store_device()->nvm_handle,
                                 &capacity_info);
@@ -160,25 +163,38 @@ bool NVM_KV_Expiry_Manager::expire_keys()
     {
         percent_used = ((double)capacity_info.used_phys_capacity/
                 (double)capacity_info.total_phys_capacity) * 100;
-        if (m_last_seen_capacity)
+        if (m_last_seen_capacity && (percent_used > m_last_seen_capacity))
         {
+            m_no_expire_count = 0;
             //if percentage is greater than M_TRIGGER_NEXT of last
             //triggering percentage, return true
-            if ((percent_used - m_last_seen_capacity) >
-                    M_TRIGGER_NEXT)
+            if ((percent_used - m_last_seen_capacity) > M_TRIGGER_NEXT)
             {
-                m_last_seen_capacity = percent_used;
-                return true;
+                ret_val = true;
+            }
+        }
+        else if (percent_used == m_last_seen_capacity)
+        {
+            if (m_no_expire_count > M_NO_EXPIRY_LIMIT)
+            {
+                m_no_expire_count = 0;
+                ret_val = false;
+            }
+            else
+            {
+                m_no_expire_count++;
+                ret_val = true;
             }
         }
         else if (percent_used >= M_TRIGGER_PERCENT)
         {
+            m_no_expire_count = 0;
             //if percentage is > M_TRIGGER_PERCENT
-            m_last_seen_capacity = percent_used;
-            return true;
+            ret_val = true;
         }
     }
-    return false;
+    m_last_seen_capacity = percent_used;
+    return ret_val;
 }
 //
 //expiry scanner goes on timed wait, it will be either

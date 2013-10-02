@@ -74,9 +74,11 @@ class NVM_KV_Expiry_Manager : public NVM_KV_Scanner
         bool expire_keys();
 
     private:
+        static const int M_NO_EXPIRY_LIMIT = 10;   ///< limit on expiry not happening in contiguous expiry thread runs
         static const int M_TIME_INTERVAL = 86400;  ///< Time interval to trigger expiry (in seconds)
         static const int M_TRIGGER_PERCENT = 25;   ///< First trigger will be given after drive is 25% filled
         static const int M_TRIGGER_NEXT = 5;       ///< Subsequent capacity triggers after 5%
         double m_last_seen_capacity;               ///< Last seen percentage of capacity
+        int m_no_expire_count;                     ///< counter which keeps track of no expiry done in contiguous expiry thread runs
 };
 #endif //KV_EXPIRY_MANAGER_H_

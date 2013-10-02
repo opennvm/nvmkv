@@ -223,12 +223,22 @@ int NVM_KV_Pool_Mgr::restore()
         goto end_restore;
     }
 
-    //If there is any bit set in the deleted bitmap, that means that there was
-    //deletion of some pools in progress and hence we should add those in
-    //hash map for pools in deletion so that scanner considers them for
-    //deletion
     for (int i = 1; i < m_pStoreMetadata->max_pools; i++)
     {
+        nvm_kv_pool_tag_t pool_tag;
+        string pool_tag_str;
+
+        //if pool_id is in use, add pool_tag for the pool_id in pool_tag map
+        get_pool_tag(i, &pool_tag);
+        pool_tag_str.assign((char *) &pool_tag);
+        if (!pool_tag_str.empty())
+        {
+            m_tags_map.insert(std::pair<string, int>(pool_tag_str, i));
+        }
+        //If there is any bit set in the deleted bitmap, that means that there was
+        //deletion of some pools in progress and hence we should add those in
+        //hash map for pools in deletion so that scanner considers them for
+        //deletion
         if (bitmap_test(m_bitmaps.deleted, i))
         {
             //This pool id was marked for deletion. Make sure that it is
