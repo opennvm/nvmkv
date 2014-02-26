@@ -1,4 +1,4 @@
-//----------------------------------------------------------------------------
+    //----------------------------------------------------------------------------
 // NVMKV
 // |- Copyright 2012-2013 Fusion-io, Inc.
 
@@ -88,11 +88,19 @@ int NVM_KV_Iterator::initialize()
 //allocate iterator, set the iterator at first available location within
 //iterator list
 //
-int NVM_KV_Iterator::alloc_iter(int iter_type)
+int NVM_KV_Iterator::alloc_iter(int iter_type, int pool_id,
+                                uint32_t pool_hash)
 {
     int ret_code = NVM_SUCCESS;
     kv_batch_iterator_t *batch_iter = NULL;
     nvm_kv_store_device_t *kv_device = NULL;
+
+    if (iter_type != KV_REGULAR_ITER && iter_type != KV_POOL_DEL_ITER &&
+        iter_type != KV_ARB_EXP_ITER && iter_type != KV_GLB_EXP_ITER)
+    {
+        ret_code = -NVM_ERR_INVALID_INPUT;
+        goto end_alloc_iter;
+    }
 
     kv_device = m_p_kv_store->get_store_device();
     batch_iter = (kv_batch_iterator_t *) malloc(sizeof(kv_batch_iterator_t)
@@ -102,6 +110,15 @@ int NVM_KV_Iterator::alloc_iter(int iter_type)
     {
         ret_code =  -NVM_ERR_OUT_OF_MEMORY;
         goto end_alloc_iter;
+    }
+
+    //set the pool id in the iterator
+    if (iter_type != KV_POOL_DEL_ITER)
+    {
+        batch_iter->pool_id = pool_id;
+        batch_iter->pool_hash = pool_hash;
+        batch_iter->pos = 0;
+        batch_iter->num_ranges_found = 0;
     }
 
     if (iter_type == KV_REGULAR_ITER)
@@ -151,15 +168,14 @@ int NVM_KV_Iterator::alloc_iter(int iter_type)
     }
 
 end_alloc_iter:
-    free (batch_iter);
+        free (batch_iter);
     return ret_code;
 }
 //
 //initializes iterator param every time this function is called
 //
-int NVM_KV_Iterator::init_iter(int it_id, int pool_id, uint64_t search_base,
-                               uint64_t search_length, int iter_type,
-                               uint32_t pool_hash)
+int NVM_KV_Iterator::init_iter(int it_id, uint64_t search_base,
+                               uint64_t search_length, int iter_type)
 
 {
     nvm_logical_range_iter_t *it = NULL;
@@ -193,8 +209,8 @@ int NVM_KV_Iterator::init_iter(int it_id, int pool_id, uint64_t search_base,
     it->ranges = (nvm_block_range_t *) (batch_iter + 1);
 
     //fill in the filter information
-    it->filters.filter_pattern = pool_hash;
-    if (pool_hash == 0)
+    it->filters.filter_pattern = batch_iter->pool_hash;
+    if (batch_iter->pool_hash == 0)
     {
         //for zero pool hash don't apply filter
         //iterate over all keys
@@ -205,13 +221,32 @@ int NVM_KV_Iterator::init_iter(int it_id, int pool_id, uint64_t search_base,
         it->filters.filter_mask = m_pool_mask;
     }
 
-    //set the pool id in the iterator
-    batch_iter->pool_id = pool_id;
-    batch_iter->pool_hash = pool_hash;
-    batch_iter->pos = 0;
-    batch_iter->num_ranges_found = 0;
-
     return NVM_SUCCESS;
+}
+//
+//get the iterator object for the given iterator type and id
+//
+kv_batch_iterator_t* NVM_KV_Iterator::get_iter(int iter_id, int iter_type)
+{
+    if (iter_type == KV_REGULAR_ITER &&
+        iter_id >= 0 && iter_id < NVM_KV_MAX_ITERATORS)
+    {
+        return  m_iter[iter_id];
+    }
+    else if (iter_type == KV_ARB_EXP_ITER && iter_id == M_ARB_EXP_ITR)
+    {
+        return  m_iter[iter_id];
+    }
+    else if (iter_type == KV_POOL_DEL_ITER && iter_id == M_POOL_DEL_ITR)
+    {
+        return  m_iter[iter_id];
+    }
+    else if (iter_type == KV_GLB_EXP_ITER && iter_id == M_GLB_EXP_ITR)
+    {
+        return  m_iter[iter_id];
+    }
+
+    return NULL;
 }
 //
 //sets iterator to next valid position within a pool
@@ -525,6 +560,9 @@ kv_get_pool_id_exit:
 //
 int NVM_KV_Iterator::validate_iter(int it_id, int iter_type)
 {
+    kv_batch_iterator_t *batch_iter = NULL;
+    NVM_KV_Pool_Mgr *pool_mgr = NULL;
+
     if (iter_type == KV_REGULAR_ITER)
     {
         if (it_id < 0 || it_id >= NVM_KV_MAX_ITERATORS)
@@ -552,6 +590,22 @@ int NVM_KV_Iterator::validate_iter(int it_id, int iter_type)
         {
             return -NVM_ERR_INVALID_INPUT;
         }
+    }
+
+    batch_iter = m_iter[it_id];
+
+    if (!batch_iter)
+    {
+        return -NVM_ERR_INVALID_INPUT;
+    }
+
+    pool_mgr = m_p_kv_store->get_pool_mgr();
+
+    if (pool_mgr == NULL ||
+        (pool_mgr->check_pool_status(batch_iter->pool_id)
+         != POOL_IN_USE && batch_iter->pool_id != pool_mgr->get_all_poolid()))
+    {
+        return -NVM_ERR_INVALID_INPUT;
     }
 
     return NVM_SUCCESS;

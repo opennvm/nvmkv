@@ -78,15 +78,16 @@ int NVM_KV_Expiry_Manager::start_expiry()
     uint32_t iov_count = 0;
     nvm_iovec_t *iovec = get_iovec();
     int ret_code = 0;
+    NVM_KV_Store *kv_store = get_store();
     nvm_kv_store_capabilities_t capabilities;
     uint64_t max_trim_size_per_iov = 0;
 
-    capabilities = get_store()->get_store_device()->capabilities;
+    capabilities = kv_store->get_store_device()->capabilities;
     max_trim_size_per_iov =
         capabilities.nvm_atomic_write_multiplicity *
         capabilities.nvm_max_trim_size_per_iov;
 
-    while (!get_store()->get_pool_mgr()->check_pool_del_status() &&
+    while (!kv_store->get_pool_mgr()->check_pool_del_status() &&
            ((ret_code = perform_scan(&key_loc, &read_len)) == NVM_SUCCESS))
     {
         if (get_iter_type() != KV_GLB_EXP_ITER)
@@ -103,8 +104,7 @@ int NVM_KV_Expiry_Manager::start_expiry()
             }
         }
         //check if read_len is greater than max_trim_size_per_iov
-        discard_len = nvm_kv_round_upto_blk(read_len,
-                max_trim_size_per_iov);
+        discard_len = read_len * capabilities.nvm_sector_size;
         if (discard_len > max_trim_size_per_iov)
         {
             //there is some problem with length of key
@@ -123,24 +123,27 @@ int NVM_KV_Expiry_Manager::start_expiry()
         }
         if (iov_count == capabilities.nvm_max_num_iovs)
         {
-            ret_code = batch_discard(iovec, iov_count);
-            if (ret_code < 0)
+            if ((ret_code = kv_store->batch_delete_sync(iovec, iov_count))
+                != NVM_SUCCESS)
             {
-                break;
+               break;
             }
             iov_count = 0;
         }
     }
+
     if (ret_code == -NVM_ERR_OBJECT_NOT_FOUND)
     {
         ret_code = NVM_SUCCESS;
     }
+
     //issue discards on any of the keys in buffer
     //only when the end is reached
     if (iov_count && ret_code == NVM_SUCCESS)
     {
-        ret_code = batch_discard(iovec, iov_count);
+        ret_code = kv_store->batch_delete_sync(iovec, iov_count);
     }
+
     reset_iterator();
     return ret_code;
 }

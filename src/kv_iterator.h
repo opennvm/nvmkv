@@ -60,30 +60,39 @@ class NVM_KV_Iterator
         ///
         ///@param[in] iter_type  type of the iterator that needs to be
         ///                      allocated
+        ///@param[in] pool_id    pool id to which iterator should be
+        ///                      initialized
+        ///@param[in] pool_hash  pool hash of the pool id, default is set
+        ///                      to 0
         ///@return               returns index of the iterator within iterator
         ///                      list or returns error if the iterator list
         ///                      is full
         ///
-        int alloc_iter(int iter_type);
+        int alloc_iter(int iter_type, int pool_id, uint32_t pool_hash);
         ///
         ///initializes iterator param every time the function is called
         ///
         ///@param[in] it_id          index of the iterator with in iterator
         ///                          list
-        ///@param[in] pool_id        pool id to which iterator should be
-        ///                          initialized
         ///@param[in] search_base    start location of the iterator
         ///@param[in] search_length  search length of the iterator
         ///@param[in] iter_type      type of the iterator, if it is regular
         ///                          one or iterator used by scanner
-        ///@param[in] pool_hash      pool hash of the pool id, default is set
-        ///                          to 0
         ///@return                   returns 0 on success, or returns
         ///                          appropriate error code
         ///
-        int init_iter(int it_id, int pool_id, uint64_t search_base,
-                      uint64_t search_length, int iter_type,
-                      uint32_t pool_hash);
+        int init_iter(int it_id, uint64_t search_base, uint64_t search_length,
+                      int iter_type);
+        ///
+        ///get the iterator object for the given iterator type and id
+        ///
+        ///@param[in] iter_id       unique identifier of iterator
+        ///@param[in] iter_type     type of the iterator, if it is regular
+        ///                         one or iterator used by scanner
+        ///@return                  returns pointer to kv_batch_iterator_t
+        ///                         object or NULL if not found
+        ///
+        kv_batch_iterator_t* get_iter(int iter_id, int iter_type);
         ///
         ///sets iterator to next location with in a pool
         ///

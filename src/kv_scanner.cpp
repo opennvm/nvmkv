@@ -66,15 +66,21 @@ int NVM_KV_Scanner::initialize(int iter_type)
         int ret_code = 0;
         int max_iovs =
             m_kv_store->get_store_device()->capabilities.nvm_max_num_iovs;
+        int pool_id = m_kv_store->get_pool_mgr()->get_all_poolid();
 
-        ret_code = m_kv_store->get_iter()->alloc_iter(iter_type);
+        ret_code = m_kv_store->get_iter()->alloc_iter(iter_type, pool_id, 0);
         if (ret_code < 0)
         {
             return ret_code;
         }
         m_iter_id = ret_code;
         m_iter_type = iter_type;
-        reset_iterator();
+
+        //pool deletion iterator's initialization is different
+        if (iter_type != KV_POOL_DEL_ITER)
+        {
+            reset_iterator();
+        }
 
         //allocate array of vectors for batch discard
         m_iovec = new(std::nothrow) nvm_iovec_t[max_iovs];
@@ -161,9 +167,8 @@ int NVM_KV_Scanner::reset_iterator()
     uint64_t usr_data_lba = m_kv_store->get_layout()->get_data_start_lba();
     uint64_t MAX_VALID_SECTOR = m_kv_store->get_layout()->get_kv_len() -
                                 usr_data_lba;
-    int all_poolid = m_kv_store->get_pool_mgr()->get_all_poolid();
-    retval = m_kv_store->get_iter()->init_iter(m_iter_id, all_poolid,
-        usr_data_lba, MAX_VALID_SECTOR, m_iter_type, 0);
+    retval = m_kv_store->get_iter()->init_iter(m_iter_id, usr_data_lba,
+                                               MAX_VALID_SECTOR, m_iter_type);
     return retval;
 }
 //
@@ -243,22 +248,6 @@ key_del_exit:
     return ret_code;
 }
 //
-//issues discard on keys
-//
-int NVM_KV_Scanner::batch_discard(nvm_iovec_t *iovec, uint32_t iov_count)
-{
-    nvm_kv_store_device_t *device = m_kv_store->get_store_device();
-    int ret_code = 0;
-
-    ret_code = nvm_writev(device, iovec, iov_count, true);
-    if (ret_code != NVM_SUCCESS)
-    {
-        return -NVM_ERR_IO;
-    }
-
-    return ret_code;
-}
-//
 //restarts scanner if it is sleeping
 //on the conditional variable.
 //
@@ -316,6 +305,13 @@ NVM_KV_Store* NVM_KV_Scanner::get_store()
 int NVM_KV_Scanner::get_iter_type()
 {
     return m_iter_type;
+}
+//
+//gets iterator id
+//
+int NVM_KV_Scanner::get_iter_id()
+{
+    return m_iter_id;
 }
 //
 //locks mutex

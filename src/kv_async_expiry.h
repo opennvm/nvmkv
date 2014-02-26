@@ -67,11 +67,12 @@ class NVM_KV_Async_Expiry : public NVM_KV_Scanner
         ///iovecs is handed over to start_thread function to perform deletion
         ///
         ///@param[in] key_loc start loction of the key to be updated
+        ///@param[in] kv_hdr  pointer to the header of the KV pair
         ///
         ///@return                  returns 0 on success or return appropriate
         ///                         error
         ///
-        int64_t update_expiry_queue(uint64_t key_loc);
+        int64_t update_expiry_queue(uint64_t key_loc, nvm_kv_header_t *kv_hdr);
 
     private:
         std::queue<nvm_iovec_block_t *> m_queue;  ///< queue for storing blocks of iovecs

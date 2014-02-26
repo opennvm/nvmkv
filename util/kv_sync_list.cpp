@@ -75,10 +75,10 @@ bool NVM_KV_Sync_List::delete_entry(uint64_t entry)
     {
         ret_code = false;
     }
-    m_list.erase(itr , m_list.end());
-    //signal only if the entry got deleted
-    if (ret_code)
+    else
     {
+        m_list.erase(itr);
+        //signal only if the entry got deleted
         pthread_cond_broadcast(&m_condition_var);
     }
     pthread_mutex_unlock(&m_mtx);

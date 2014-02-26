@@ -126,9 +126,15 @@ static int bitmap_helper(kv_bitmap_t *pbm, uint32_t nbits,
                 }
                 else if (action == BM_FIND_FIRST_CLEAR_AND_SET && !is_set)
                 {
-                    pbm[i] |= mask;
-                    done = 1;
-                    break;
+                    if ((idx = (i << 5) + j) < nbits)
+                    {
+                        pbm[i] |= mask;
+                        return idx;
+                    }
+                    else
+                    {
+                        return BM_FULL;
+                    }
                 }
             }
             if (done)

@@ -25,7 +25,7 @@ MODE="-O2 -DNDEBUG"     # Production mode
 
 SHARED_CFLAGS="-fPIC -Wall -Werror -Wno-trigraphs -Wno-sign-compare -fno-strict-aliasing -fno-common -pipe -funit-at-a-time -std=c++0x -rdynamic"
 
-INCLUDE_PATH="-I/usr/include/libxml2 -I/usr/include/nvm -I/usr/src/nvm/include"
+INCLUDE_PATH="-I/usr/include/nvm"
 
 LD_PATH="-L/usr/lib/nvm -L/usr/lib/fio"
 
@@ -64,8 +64,6 @@ AC_CHECK_HEADERS([aio.h\
                   fcntl.h\
                   float.h\
                   getopt.h\
-                  libxml/tree.h\
-                  libxml/xpath.h\
                   linux/fs.h\
                   malloc.h\
                   map\

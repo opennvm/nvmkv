@@ -35,6 +35,13 @@ extern "C"
 #include "nvm-kv.h"
 #include <libxml/xpath.h>
 #include <libxml/tree.h>
+#include "../src/kv_layout.h"
+#include "../src/kv_store.h"
+#include "../src/kv_store_mgr.h"
+#include <fstream>
+#include <iostream>
+
+const unsigned int FOUR_MEG = 1U << 22;
 
 //static member variable definition
 KeyList* KeyList::m_pInstance = NULL;
@@ -87,6 +94,14 @@ int main (int argc, char *argv[])
             goto end_main;
         }
         KvTest::testPerf(options);
+    }
+    if (options.m_dumpData)
+    {
+        std::cout << "Will dump data to file " << options.m_dumpDataFilename << "\n";
+        if (!KvTest::dumpData(options))
+        {
+            std::cerr << "Dumping store data failed\n";
+        }
     }
 end_main:
     if (options.m_perfTest)
@@ -266,6 +281,31 @@ void KvTest::testPerf(KvOptions &options)
                 return;
             }
         }
+        if (strcmp(job, "kv_pool_create") == 0)
+        {
+            if (options.m_noPools > 0)
+            {
+                fprintf(stdout, "Creating %u pools...\n", options.m_noPools);
+                if (KvApi::testPoolCreate() < 0)
+                {
+                    return;
+                }
+                fprintf(stdout, "Done creating pools\n");
+                if (KvApi::testPoolTags(options.m_noPools) < 0)
+                {
+                    fprintf(stdout, "pool tag fetch failed\n");
+                    return;
+                }
+            }
+            //right after creating pool, pool status must be valid
+            if (options.m_getPoolInfo)
+            {
+                if (KvApi::testGetAllPoolInfo() < 0)
+                {
+                    return;
+                }
+            }
+        }
         if (strcmp(job, "kv_pool_delete") == 0)
         {
             if (KvApi::testDeleteAllPools(0) < 0)
@@ -317,6 +357,7 @@ bool KvTest::testSmoke(KvOptions &options)
     int it_id_next = -1;
     int next_element = 0;
     uint32_t key_len = 9;
+    uint64_t cache_size = 4096;
     nvm_kv_store_info_t store_info;
     nvm_kv_pool_info_t pool_info;
     nvm_kv_pool_tag_t tag;
@@ -341,7 +382,7 @@ bool KvTest::testSmoke(KvOptions &options)
         goto end_smoke;
     }
     //Creating KV Store
-    kv_id = nvm_kv_open(fd, version, max_pools, 0);
+    kv_id = nvm_kv_open(fd, version, max_pools, 0, cache_size);
     if (kv_id < 0)
     {
         fprintf(stderr, "could not create KV store errno %d\n", errno);
@@ -367,6 +408,7 @@ bool KvTest::testSmoke(KvOptions &options)
         fprintf(stdout, "   expiry_mode: %u\n", store_info.expiry_mode);
         fprintf(stdout, "   num_keys: %lu\n", store_info.num_keys);
         fprintf(stdout, "   free_space: %lu\n", store_info.free_space);
+        fprintf(stdout, "   cache_size: %lu\n", store_info.cache_size);
         fprintf(stdout, "nvm_kv_get_store_info succeeded\n");
     }
     strcpy((char *) tag.pool_tag, "tag0");
@@ -586,6 +628,28 @@ bool KvTest::testSmoke(KvOptions &options)
     }
     fprintf(stdout, "nvm_kv_pool_delete succeeded\n");
 
+    //retrieve KV store information
+    ret = nvm_kv_get_store_info(kv_id, &store_info);
+    if (ret < 0)
+    {
+        fprintf(stderr, "nvm_kv_get_store_info failed, errno %d\n",
+                errno);
+        ret_val =  false;
+        goto end_smoke;
+    }
+    else
+    {
+        fprintf(stdout, "KV store information:\n");
+        fprintf(stdout, "   version: %u\n", store_info.version);
+        fprintf(stdout, "   num_pools: %u\n", store_info.num_pools);
+        fprintf(stdout, "   max_pools: %u\n", store_info.max_pools);
+        fprintf(stdout, "   expiry_mode: %u\n", store_info.expiry_mode);
+        fprintf(stdout, "   num_keys: %lu\n", store_info.num_keys);
+        fprintf(stdout, "   free_space: %lu\n", store_info.free_space);
+        fprintf(stdout, "   cache_size: %lu\n", store_info.cache_size);
+        fprintf(stdout, "nvm_kv_get_store_info succeeded\n");
+    }
+
     //KV close
     ret = nvm_kv_close(kv_id);
     if (ret < 0)
@@ -604,6 +668,370 @@ end_smoke:
     close(fd);
     return ret_val;
 }
+
+// Copy of kv_store_mgr.cpp's comp_sparse_addr_bits()
+int comp_sparse_addr_bits(uint64_t size, uint32_t sector_size)
+{
+    int size_bits = 0;
+    int sector_bits = 0;
+    while (size)
+    {
+        size_bits++;
+        size = size >> 1;
+    }
+
+    while (sector_size)
+    {
+        sector_bits++;
+        sector_size = sector_size >> 1;
+    }
+    size_bits = size_bits - sector_bits;
+    return size_bits;
+}
+//
+//@dump_metadata - writes data from metadata sector to file
+//
+bool KvTest::dump_metadata(NVM_KV_Layout *kv_layout, nvm_handle_t handle,
+                           void *buf, int dev_fd, uint32_t sector_size,
+                           nvm_kv_store_metadata_t *store_metadata,
+                           std::ofstream &dump_file)
+{
+    uint64_t metadata_lba;
+    uint64_t byte_offset;
+    // Dump metadata sector assuming there is no kv store. This will aid us in
+    // checking if the metadata has been corrupted
+
+    metadata_lba = kv_layout->get_metadata_lba();
+    // Query for metadata sector's existence
+    if (nvm_block_exists(handle, metadata_lba) != 1)
+    {
+        std::cerr << "Metadata lba not written to or query failed."
+                  << " Quitting" << std::endl;
+        return false;
+    }
+    byte_offset = metadata_lba * sector_size;
+    // Read the sector that contains kvstore metadata
+    if (pread(dev_fd, buf, sizeof(nvm_kv_store_metadata_t), byte_offset)
+        != sizeof(nvm_kv_store_metadata_t))
+    {
+        std::cerr << "Couldn't read metadata from device" << std::endl;
+        return false;
+    }
+
+    memcpy(store_metadata, buf, sizeof(nvm_kv_store_metadata_t));
+    // Write store metadata to file
+    dump_file << "==========================\n";
+    dump_file << "Begin KV store metadata\n";
+    dump_file << "==========================\n";
+    dump_file << "kv store id: " << store_metadata->kv_store_id << "\n";
+    dump_file << "kv store stamp: " << store_metadata->kv_store_stamp << "\n";
+    // The "num_keys" field has garbage in it, but we print it anyway as it
+    // is a member of the store metadata structure
+    dump_file << "number of keys(garbage, ignore): " << store_metadata->num_keys << "\n";
+    dump_file << "vsu id: " << store_metadata->vsu_id << "\n";
+    dump_file << "store version: " << store_metadata->version << "\n";
+    dump_file << "max pools: " << store_metadata->max_pools << "\n";
+    dump_file << "max key size: " << store_metadata->max_key_size << "\n";
+    dump_file << "max value size: " << store_metadata->max_value_size << "\n";
+    dump_file << "total number of pools: " << store_metadata->total_no_pools << "\n";
+    dump_file << "kv API revision number: " << store_metadata->kv_revision << "\n";
+    dump_file << "expiry mode: ";
+    if (store_metadata->expiry_mode == KV_GLOBAL_EXPIRY)
+    {
+        dump_file << "global\n";
+    }
+    else if (store_metadata->expiry_mode == KV_ARBITRARY_EXPIRY)
+    {
+        dump_file << "arbitrary\n";
+    }
+    else if (store_metadata->expiry_mode == KV_DISABLE_EXPIRY)
+    {
+        dump_file << "disabled\n";
+    }
+    else
+    {
+        dump_file << "unknown\n";
+    }
+
+    dump_file << "==========================\n";
+    dump_file << "End KV store metadata\n";
+    dump_file << "==========================\n";
+    dump_file << std::endl;
+
+    return true;
+}
+//
+//@dump_kv_pair_data - writes a kv pair's data to file
+//
+void KvTest::dump_kv_pair_data(void *buf, uint64_t kv_pair_start_lba,
+                               uint32_t kv_pair_size, std::ofstream &out_file,
+                               uint32_t sector_size)
+{
+    nvm_kv_header_t *kv_hdr;
+    char *key;
+    char *value;
+
+    kv_hdr = (nvm_kv_header_t *) buf;
+    key = (char*) (kv_hdr + 1);
+    value = (char *) buf;
+    value += kv_hdr->value_offset;
+    out_file << "Start LBA: " << kv_pair_start_lba << "\n";
+    out_file << "Size(units of LBAs): " << kv_pair_size / sector_size << "\n";
+    out_file << "Expiry: " << kv_hdr->metadata.expiry << "\n";
+    out_file << "Key length: " << kv_hdr->key_len << "\n";
+    out_file << "Value length: " << kv_hdr->value_len << "\n";
+    out_file << "Value offset: " << kv_hdr->value_offset << "\n";
+    out_file << "Pool id: " << kv_hdr->pool_id << "\n";
+    out_file << "Key: [" << std::string(key, kv_hdr->key_len) << "]\n";
+    out_file << "Value: [" << std::string(value, kv_hdr->value_len) << "]\n";
+    out_file << std::endl;
+}
+//
+//@dump_kv_pairs - writes kv pairs to file
+//
+bool KvTest::dump_kv_pairs(NVM_KV_Layout *kv_layout, nvm_handle_t handle,
+                           void *buf, int dev_fd,
+                           nvm_kv_store_metadata_t *store_metadata,
+                           std::ofstream &dump_file, uint32_t sector_size,
+                           uint64_t lba_max)
+{
+    uint32_t pool_tag_size;
+    uint32_t slice_addr;
+    uint64_t user_data_start_lba;
+    nvm_logical_range_iter_t nvm_iter = {0};
+    uint32_t num_ranges_found;
+    uint32_t kv_pair_size;
+    uint64_t kv_pair_start_lba;
+    uint64_t total_num_keys_found = 0;
+    nvm_capability_t kv_cap;
+    uint64_t byte_offset;
+
+    // Now use KV_Layout object to find lba from where user data starts
+
+    // ============ Copied from kv_store.cpp's initialize() function ===========
+    pool_tag_size = sizeof(nvm_kv_pool_tag_t) * store_metadata->max_pools;
+    pool_tag_size = nvm_kv_round_upto_blk(pool_tag_size, sector_size);
+    pool_tag_size = nvm_kv_round_upto_blk(pool_tag_size,
+                                          kv_layout->get_max_val_range());
+    //calculate the address that needs to be carved by hashing function,
+    //accounting for metadata, in-use bitmap, deleted bitmap and pool_tags
+    slice_addr = (pool_tag_size / kv_layout->get_max_val_range()) + 1;
+    kv_layout->set_md_rec(slice_addr); // this function sets user start lba
+    // =========== End of copy from kv_store.cpp's initialize()=================
+
+    user_data_start_lba = kv_layout->get_data_start_lba();
+
+    // Start iterating over user written data using iterator
+
+    // Query for the value of maximum number of ranges that can be retrieved
+    kv_cap.cap_id = NVM_CAP_LOGICAL_ITER_MAX_NUM_RANGES_ID;
+    if (nvm_get_capabilities(handle, &kv_cap, 1, false) != 1)
+    {
+        std::cerr << "Couldn't query max number of ranges that iterator can"
+                  << " return. Quitting" << std::endl;
+        return false;
+    }
+
+    //Prepare the iterator
+    nvm_iter.max_ranges = (uint32_t) kv_cap.cap_value;
+    nvm_iter.range_to_iterate.start_lba = user_data_start_lba;
+    nvm_iter.range_to_iterate.length =
+        lba_max + 1 - user_data_start_lba;
+    nvm_iter.ranges = (nvm_block_range_t *) malloc(sizeof(nvm_block_range_t) *
+                                                   nvm_iter.max_ranges);
+    if (!nvm_iter.ranges)
+    {
+        std::cerr << "Could not allocate memory for iterator" << std::endl;
+        return false;
+    }
+
+    dump_file << "==========================" << std::endl;
+    dump_file << "Begin dumping KV pairs" << std::endl;
+    dump_file << "==========================" << std::endl;
+    dump_file << std::endl;
+
+    // Keep iterating until we exhaust all KV pairs
+    while ((num_ranges_found = nvm_logical_range_iterator(handle, &nvm_iter)) != -1)
+    {
+        // We found some KV pairs
+        if (num_ranges_found > 0)
+        {
+            for (uint32_t i = 0; i < num_ranges_found; i++)
+            {
+                // Read the sectors containing a KV pair
+                kv_pair_size = (nvm_iter.ranges[i]).length * sector_size;
+                kv_pair_start_lba = (nvm_iter.ranges[i]).start_lba;
+                byte_offset = kv_pair_start_lba * sector_size;
+                if (pread(dev_fd, buf, kv_pair_size, byte_offset)
+                    != kv_pair_size)
+                {
+                    std::cerr << "Couldn't read KV pair starting at sector "
+                              << kv_pair_start_lba << ": " << strerror(errno)
+                              << std::endl;
+                    return false;
+                }
+                this->dump_kv_pair_data(buf, kv_pair_start_lba, kv_pair_size,
+                                  dump_file, sector_size);
+            }
+            total_num_keys_found += num_ranges_found;
+        }
+        else
+        {
+            // End of iteration
+            break;
+        }
+    }
+
+    // Bail out if iterator failed
+    if (num_ranges_found == -1)
+    {
+        std::cerr << "Iterating over the KV pairs failed: " << strerror(errno) << std::endl;
+        return false;
+    }
+
+    dump_file << "================================" << std::endl;
+    dump_file << "Dumped " << total_num_keys_found << " KV pairs" << std::endl;
+    dump_file << "================================" << std::endl;
+
+    return true;
+}
+//
+//@dumpData - dump kvstore data to file
+//
+bool KvTest::dumpData(KvOptions &options)
+{
+    uint64_t device_logical_size;
+    ofstream dump_file(options.m_dumpDataFilename);
+    nvm_capacity_t capacity;
+    int dev_fd = -1;
+    nvm_version_t ver = {NVM_PRIMITIVES_API_MAJOR, NVM_PRIMITIVES_API_MINOR,
+                         NVM_PRIMITIVES_API_MICRO, 0};
+    nvm_handle_t handle = -1;
+    nvm_capability_t kv_cap;
+    uint32_t sector_size;
+    uint32_t sparse_addr_bits;
+    NVM_KV_Layout *kv_layout;
+    NVM_KV_Store *kv_store;
+    nvm_kv_store_metadata_t store_metadata;
+    void *buf = NULL;
+    KvTest kvtest;
+    bool dump_data_result = true;
+
+    std::cout << "Dumping relevant data from device " << options.m_deviceName << std::endl;
+
+    if (!dump_file.is_open())
+    {
+        std::cerr << "Could not open/create file " << options.m_dumpDataFilename
+                  << "for dumping kvstore data" << std::endl;
+        return false;
+    }
+
+    // Open store device
+    dev_fd = open(options.m_deviceName, O_RDONLY);
+    if (dev_fd < 0)
+    {
+        std::cerr << "Could not open device " << options.m_deviceName
+                  << " " << strerror(errno) << std::endl;
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+
+    // Get NVM handle for store device
+    handle = nvm_get_handle(dev_fd, &ver);
+    if (handle == -1)
+    {
+        std::cerr << "Could not get NVM handle for device " << options.m_deviceName
+                  << " " << strerror(errno) << std::endl;
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+    // Get sector size
+    kv_cap.cap_id = NVM_CAP_SECTOR_SIZE_ID;
+    if (nvm_get_capabilities(handle, &kv_cap, 1, false) != 1)
+    {
+        std::cerr << "Couldn't query sector size. Quitting" << std::endl;
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+    sector_size = (uint32_t) kv_cap.cap_value;
+    cout << "Sector size of store device is " << sector_size << "\n";
+
+    // ============ Copied from kv_store_mgr.cpp's kv_open() ===================
+    // Get capacity so that we can calculate sparse address bits
+    if (nvm_get_capacity(handle, &capacity) != 0)
+    {
+        std::cerr << "Couldn't query capacity of device. Quitting" << std::endl;
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+    device_logical_size = capacity.total_logical_capacity * sector_size;
+    sparse_addr_bits = comp_sparse_addr_bits(device_logical_size, sector_size);
+    kv_store = new(std::nothrow) NVM_KV_Store();
+    if (!kv_store)
+    {
+        std::cerr << "Error, allocating for kvstore" << std::endl;
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+    // =========== End of copy from kv_store_mgr.cpp's kv_open()================
+
+    // ============ Copied from kv_store.cpp's initialize() ====================
+    //create KV store layout object
+    kv_layout = new(std::nothrow) NVM_KV_Layout(sector_size, sparse_addr_bits);
+    if (!kv_layout)
+    {
+        std::cerr << "Error, allocating layout" << std::endl;
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+    // =========== End of copy from kv_store.cpp's initialize()=================
+
+    // Allocate a large enough buffer which can be reused
+    buf = (void*) malloc(2 * kv_layout->get_max_val_range());
+    if (!buf)
+    {
+        std::cerr << "Could not allocate memory" << std::endl;
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+
+    if (!kvtest.dump_metadata(kv_layout, handle, buf, dev_fd, sector_size,
+                              &store_metadata, dump_file))
+    {
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+
+    std::cout << "Wrote metadata to file" << std::endl;
+    // Verify if store is actually present and can be read
+    if (store_metadata.kv_store_stamp != kv_layout->get_kv_stamp() ||
+        store_metadata.max_pools > NVM_KV_MAX_POOLS ||
+        store_metadata.max_pools < NVM_KV_MIN_POOLS)
+    {
+        std::cerr << "Metadata corrupted or no store present" << std::endl;
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+
+    std::cout << "Will dump KV pairs now" << std::endl;
+    if (!kvtest.dump_kv_pairs(kv_layout, handle, buf, dev_fd,
+                              &store_metadata, dump_file, sector_size,
+                              capacity.total_logical_capacity - 1))
+    {
+        dump_data_result = false;
+        goto dump_data_end;
+    }
+
+    std::cout << "Finished dumping KV pairs" << std::endl;
+
+dump_data_end:
+    free(buf);
+    nvm_release_handle(handle);
+    close(dev_fd);
+
+    return dump_data_result;
+}
+
 //
 //member function definitions for KvApi
 //
@@ -621,7 +1049,7 @@ int KvApi::testKvOpen(int fd)
     }
 
     m_kvId = nvm_kv_open(fd, m_options.m_apiVersion, m_options.m_maxPools,
-                         m_options.m_expiry);
+                         m_options.m_expiry, m_options.m_cacheSize);
     if (m_kvId < 0)
     {
         fprintf(stderr, "Error, Initializing KV interface,"
@@ -803,6 +1231,7 @@ int KvApi::testGetKvStoreInfo()
         fprintf(stdout, "   global_expiry: %u\n", store_info.global_expiry);
         fprintf(stdout, "   num_keys: %lu\n", store_info.num_keys);
         fprintf(stdout, "   free_space: %lu\n", store_info.free_space);
+        fprintf(stdout, "   cache_size: %lu\n", store_info.cache_size);
     }
     return ret_code;
 }
@@ -851,6 +1280,7 @@ int KvApi::testDeleteAllKeys()
 {
     int ret_code = 0;
 
+    fprintf(stdout, "Deleting all keys...\n");
     ret_code = nvm_kv_delete_all(m_kvId);
     if (ret_code == -1)
     {
@@ -1643,6 +2073,7 @@ bool KvOptions::parseConfFile(char *file_name)
     xmlXPathContext *xpathCtx = NULL;
     xmlXPathObject *xpathObjDevice = NULL;
     xmlXPathObject *xpathObjTest = NULL;
+    xmlXPathObject *xpathObjDumpData = NULL;
     xmlXPathObject *xpathObjT = NULL;
     xmlXPathObject *xpathObjJ = NULL;
     xmlXPathObject *xpathObjE = NULL;
@@ -1729,6 +2160,13 @@ bool KvOptions::parseConfFile(char *file_name)
                 m_functionalTest = true;
             }
         }
+        if (strcmp((const char*) attr->name, "dumpData") == 0)
+        {
+            if (strcmp((const char*) attr->children->content, "true") == 0)
+            {
+                m_dumpData = true;
+            }
+        }
         attr = attr->next;
     }
     //all parsing for perf is done below
@@ -1736,7 +2174,7 @@ bool KvOptions::parseConfFile(char *file_name)
     if (!m_perfTest)
     {
         ret_val = true;
-        goto end_parse;
+        goto end_perf;
     }
     //read all perf/io information
     xpathObjIo = xmlXPathEvalExpression ((xmlChar *) "//nvmKV/perf/io",
@@ -1769,6 +2207,10 @@ bool KvOptions::parseConfFile(char *file_name)
         if (strcmp((const char*) attr->name, "batchSize") == 0)
         {
             m_numIovs = atoi((const char*) attr->children->content);
+        }
+        if (strcmp((const char*) attr->name, "cacheSize") == 0)
+        {
+            m_cacheSize = atol((const char*) attr->children->content);
         }
         attr = attr->next;
     }
@@ -1915,6 +2357,31 @@ bool KvOptions::parseConfFile(char *file_name)
         }
         attr = attr->next;
     }
+end_perf:
+    //read all information for dumping data
+    if (m_dumpData)
+    {
+        xpathObjDumpData = xmlXPathEvalExpression ((xmlChar *) "//nvmKV/dumpData",
+                                                 xpathCtx);
+        if (xpathObjDumpData->nodesetval->nodeNr ==  0)
+        {
+            fprintf(stderr, "dumpData not configured\n");
+            ret_val = false;
+            goto end_parse;
+        }
+        node = xpathObjDumpData->nodesetval->nodeTab[0];
+        attr = node->properties;
+        while (attr)
+        {
+            if (strcmp((const char*) attr->name, "filename") == 0)
+            {
+                strcpy(m_dumpDataFilename, (const char*) attr->children->content);
+                fprintf(stdout, "data dump file name %s\n", m_dumpDataFilename);
+            }
+
+            attr = attr->next;
+        }
+    }
 end_parse:
     xmlXPathFreeObject(xpathObjDevice);
     xmlXPathFreeObject(xpathObjTest);
@@ -1923,6 +2390,7 @@ end_parse:
     xmlXPathFreeObject(xpathObjE);
     xmlXPathFreeObject(xpathObjP);
     xmlXPathFreeObject(xpathObjIo);
+    xmlXPathFreeObject(xpathObjDumpData);
     xmlXPathFreeContext(xpathCtx);
     xmlFreeDoc(doc);
     return ret_val;

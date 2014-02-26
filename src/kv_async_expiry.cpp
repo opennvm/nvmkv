@@ -46,12 +46,10 @@ NVM_KV_Async_Expiry::~NVM_KV_Async_Expiry()
 //
 void* NVM_KV_Async_Expiry::start_thread()
 {
-    bool wait = false;
     uint64_t max_iovecs = get_store()->get_store_device()->
         capabilities.nvm_max_num_iovs;
     nvm_iovec_block_t *iovec_block = NULL;
     nvm_iovec_t *iovec_entry = NULL;
-    bool insert_lba[max_iovecs];
     bool async_del = true;
 
     set_cancel_state();
@@ -79,28 +77,10 @@ void* NVM_KV_Async_Expiry::start_thread()
         pthread_mutex_unlock(get_mutex());
 
         //deletion of iovecs dependent only on popping from queue
-        //Insertion of iovec in the sync map
-        for (int i = 0; i < max_iovecs; i++)
+        //Insertion of iovec in the safe sync list
+        if (get_store()->batch_delete_sync(iovec_entry, max_iovecs) != NVM_SUCCESS)
         {
-            insert_lba[i] = false;
-            if (!get_store()->insert_lba_to_safe_list(
-                        iovec_entry[i].iov_lba, &wait))
-            {
-                fprintf(stderr, "Error inserting the iovec entry\
-                        in the sync map\n");
-            }
-            insert_lba[i] = true;
-        }
-        //deleting the iovecs
-        nvm_writev(get_store()->get_store_device(), iovec_entry, max_iovecs, true);
-
-        for (int i = 0; i < max_iovecs; i++)
-        {
-            if (insert_lba[i])
-            {
-                get_store()->delete_lba_from_safe_list(
-                        iovec_entry[i].iov_lba);
-            }
+            fprintf(stderr, "Error deleting expired keys at async expiry scanner\n");
         }
 
         delete iovec_block->iovec_entry;
@@ -116,17 +96,20 @@ void* NVM_KV_Async_Expiry::start_thread()
 //are supported by media are reached, that particular block of
 //iovecs is handed over to start_thread function to perform deletion
 //
-int64_t NVM_KV_Async_Expiry::update_expiry_queue(uint64_t key_loc)
+int64_t NVM_KV_Async_Expiry::update_expiry_queue(uint64_t key_loc,
+                                                 nvm_kv_header_t *hdr)
 {
     bool iovec_present = false;
     int64_t ret_code = 0;
     uint64_t iov_count = 0;
-    uint64_t max_iovecs = get_store()->get_store_device()->
-        capabilities.nvm_max_num_iovs;
+    NVM_KV_Store *kv_store = get_store();
+    nvm_kv_store_capabilities_t cap =
+        kv_store->get_store_device()->capabilities;
+    uint64_t max_iovecs = cap.nvm_max_num_iovs;
     nvm_iovec_block_t *iovec_block = NULL;
     nvm_iovec_t *iovec_entry = NULL;
-    uint64_t trim_len = get_store()->get_layout()->get_max_val_range() /
-        get_store()->get_sector_size();
+    uint64_t trim_len;
+    uint32_t sector_size = cap.nvm_sector_size;
 
     pthread_mutex_lock(get_mutex());
 
@@ -169,6 +152,14 @@ int64_t NVM_KV_Async_Expiry::update_expiry_queue(uint64_t key_loc)
 
     if (!iovec_present)
     {
+        if ((trim_len = hdr->value_offset + hdr->value_len) <= sector_size)
+        {
+            trim_len = sector_size;
+        }
+        else
+        {
+            trim_len = nvm_kv_round_upto_blk(trim_len, sector_size);
+        }
 
         iovec_entry[iov_count].iov_base = 0;
         iovec_entry[iov_count].iov_len = trim_len;

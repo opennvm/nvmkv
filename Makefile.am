@@ -19,6 +19,7 @@ lib_libnvmkv_la_SOURCES = src/kv_expiry_manager.cpp \
 					  src/kv_store.cpp \
 					  src/kv_store_mgr.cpp \
 					  src/kv_async_expiry.cpp \
+					  src/kv_cache.cpp \
 					  src/nvm_kv.cpp \
 					  util/kv_bitmap.cpp \
 					  util/kv_buffer_pool.cpp \

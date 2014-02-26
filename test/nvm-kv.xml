@@ -1,12 +1,13 @@
 <?xml version="1.0"?>
 <nvmKV>
 	<device name="/dev/fioa"/>
-        <test smoke="true" perf="false" functional="false"/>
+        <test smoke="true" perf="false" functional="false" dumpData="true"/>
         <perf>
-            <io valueSize="1" kvCount="1000000" valueUnits="sector" batchSize="10"/>
+            <io valueSize="1" kvCount="1000000" valueUnits="sector" batchSize="10" cacheSize="0"/>
             <!--threads count="1"/-->
             <pools maxPools="1024" poolCount="0" getPoolInfo="false"/>
             <expiry method="0" expiryInSecs="0"/>
             <jobs jobString="kv_open,kv_get_store_info,kv_put,kv_exists,kv_get,kv_iterate,kv_delete,kv_get_store_info,kv_batch_put,kv_close" verify="false" replacePuts="false" genCount="1" readExact="false"/>
         </perf>
+        <dumpData filename="./kvstore_data"/>
 </nvmKV>

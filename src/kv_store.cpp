@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------
 // NVMKV
-// |- Copyright 2012-2013 Fusion-io, Inc.
+// |- Copyright 2012-2014 Fusion-io, Inc.
 
 // This program is free software; you can redistribute it and/or modify it under
 // the terms of the GNU General Public License version 2 as published by the Free
@@ -36,6 +36,7 @@ NVM_KV_Store::NVM_KV_Store()
     m_pKvDevice      = NULL;
     m_pPoolManager   = NULL;
     m_pHashFunc      = NULL;
+    m_cache          = NULL;
     m_pKvLayout      = NULL;
     m_pStoreMetadata = NULL;
     m_pExpiryThread  = NULL;
@@ -69,6 +70,7 @@ NVM_KV_Store::~NVM_KV_Store()
     delete m_pHashFunc;
     delete m_pKvDevice;
     delete m_iter;
+    delete m_cache;
     m_buffer_pool.release_buf((char *)m_pStoreMetadata,
         m_meta_data_buf_len);
 }
@@ -79,7 +81,7 @@ int NVM_KV_Store::initialize(int kv_id, nvm_handle_t handle,
                              nvm_kv_store_capabilities_t cap,
                              uint32_t sparse_addr_bits,
                              uint32_t max_pools, uint32_t version,
-                             uint32_t expiry)
+                             uint32_t expiry, uint64_t cache_size)
 {
     uint32_t m_meta_data_buf_len = 0; //read write length
     uint32_t ret_rw_len = 0; //read write length
@@ -107,7 +109,6 @@ int NVM_KV_Store::initialize(int kv_id, nvm_handle_t handle,
     m_pKvDevice->nvm_handle = handle;
     m_pKvDevice->fd = kv_id;
     m_pKvDevice->capabilities = cap;
-
 
     //create KV store layout object
     m_pKvLayout = new(std::nothrow) NVM_KV_Layout(
@@ -142,7 +143,6 @@ int NVM_KV_Store::initialize(int kv_id, nvm_handle_t handle,
         fprintf(stderr, "Error, hash initialization failed\n");
         return -NVM_ERR_INTERNAL_FAILURE;
     }
-
 
     //check if LBA M_KV_METADATA_LBA already exists,
     //if not exists KV store should be newly created
@@ -207,6 +207,13 @@ int NVM_KV_Store::initialize(int kv_id, nvm_handle_t handle,
             return -NVM_ERR_INVALID_INPUT;
         }
 
+        if (max_pools < NVM_KV_MIN_POOLS)
+        {
+            fprintf(stderr, "max_pools has to be at least one because"
+                    " a default pool is created during store creation.\n");
+            return -NVM_ERR_INVALID_INPUT;
+        }
+
         if (expiry > KV_GLOBAL_EXPIRY)
         {
             //Supported values of expiry are KV_DISABLE_EXPIRY,
@@ -224,8 +231,9 @@ int NVM_KV_Store::initialize(int kv_id, nvm_handle_t handle,
         //sector is accounted for kv_header and key
         metadata->max_value_size = NVM_KV_MAX_VALUE_SIZE;
         metadata->kv_revision = M_KV_REVISION;
-        //when KV store is created, number of pools will be zero
-        metadata->total_no_pools = 0;
+        //when KV store is created, number of pools will be NVM_KV_MIN_POOLS,
+        //i.e. 1, as a default pool is created.
+        metadata->total_no_pools = NVM_KV_MIN_POOLS;
         metadata->expiry_mode = expiry;
         metadata->global_expiry = 0;
 
@@ -285,15 +293,40 @@ int NVM_KV_Store::initialize(int kv_id, nvm_handle_t handle,
         return ret_code;
     }
 
-    ret_code = init_expiry_scanners();
+    //initialize scanners such as expiry scanners and pool deletion scanner
+    if ((ret_code = init_scanners()) != NVM_SUCCESS)
+    {
+        fprintf(stderr, "Error, scanners initialization failed\n");
+        return ret_code;
+    }
+
+    //create and initialize the NVMKV cache
+    if (cache_size)
+    {
+        m_cache = new(std::nothrow) NVM_KV_Cache(this);
+
+        if (!m_cache)
+        {
+            fprintf(stderr, "Error allocating memory for kvstore "
+                            "collision cache\n");
+            return -NVM_ERR_OUT_OF_MEMORY;
+        }
+
+        if ((ret_code = m_cache->initialize(cache_size)) < 0)
+        {
+            fprintf(stderr, "Error, KV cache initialization failed\n");
+            return ret_code;
+        }
+    }
+
     return ret_code;
 }
 //
-//initialises expiry related scanner and pool delete scanner
+//create and initialize expiry related scanners and pool deletion scanner
 //
-int NVM_KV_Store::init_expiry_scanners()
+int NVM_KV_Store::init_scanners()
 {
-    int ret_code = 0;
+    int ret_code = NVM_SUCCESS;
     int num_threads = 1;
 
     //create expiry thread
@@ -357,7 +390,14 @@ NVM_KV_Pool_Mgr* NVM_KV_Store::get_pool_mgr()
     return m_pPoolManager;
 }
 //
-//gets the pool manager object
+//gets the collision cache object
+//
+NVM_KV_Cache* NVM_KV_Store::get_cache()
+{
+    return m_cache;
+}
+//
+//gets the KV layout object
 //
 NVM_KV_Layout* NVM_KV_Store::get_layout()
 {
@@ -462,6 +502,7 @@ int NVM_KV_Store::initialize_capabilities(
     cap_list[6].cap_id = NVM_CAP_SECTOR_SIZE_ID;
     cap_list[7].cap_id = NVM_CAP_LOGICAL_ITER_MAX_NUM_RANGES_ID;
     cap_list[8].cap_id = NVM_CAP_ATOMIC_TRIM_MAX_VECTOR_SIZE_ID;
+    cap_list[9].cap_id = NVM_CAP_ATOMIC_WRITE_MAX_TOTAL_SIZE_ID;
 
     ret_val = nvm_get_capabilities(handle, cap_list, cap_count, false);
     if (ret_val == cap_count)
@@ -479,6 +520,7 @@ int NVM_KV_Store::initialize_capabilities(
         kv_cap->nvm_max_trim_size_per_iov = cap_list[8].cap_value;
         kv_cap->nvm_sector_size = cap_list[6].cap_value;
         kv_cap->nvm_max_num_logical_iter_ranges = cap_list[7].cap_value;
+        kv_cap->nvm_atomic_write_max_total_size = cap_list[9].cap_value;
     }
     else
     {
@@ -527,4 +569,274 @@ bool NVM_KV_Store::insert_lba_to_safe_list(uint64_t lba, bool *wait)
 bool NVM_KV_Store::delete_lba_from_safe_list(uint64_t lba)
 {
     return m_safe_lba_list.delete_entry(lba);
+}
+///
+///delete all user data from the media
+///
+int NVM_KV_Store::delete_all()
+{
+    uint64_t start_lba = 0;
+    uint64_t delete_length = 0;
+    int ret_code = NVM_SUCCESS;
+
+    //clear the cache
+    if (m_cache)
+    {
+        m_cache->kv_cache_delete_all();
+    }
+
+    //Discards will be issued from the beginning of the user data on
+    //complete device.
+    start_lba = m_pKvLayout->get_data_start_lba();
+    //device size in sectors
+    delete_length  = m_pKvLayout->get_kv_len() - start_lba;
+
+    //delete all data from the media
+    ret_code = delete_all_keys(start_lba, delete_length);
+
+    if (ret_code == NVM_SUCCESS)
+    {
+        //reset number of keys to zero
+        m_pStoreMetadata->num_keys = 0;
+    }
+
+    return ret_code;
+}
+///
+///delete the data blocks within the given range in a brute-force way
+///from the media
+///
+int NVM_KV_Store::delete_range(uint64_t del_lba, uint64_t discard_sec)
+{
+    int ret_code = 0;
+    nvm_kv_store_capabilities_t *capabilities = &m_pKvDevice->capabilities;
+    nvm_iovec_t *iovec = NULL;
+    uint64_t max_trim_size_per_iov = 0;
+    uint32_t iovec_count = 0;
+    uint64_t remaining_len = 0;
+    uint32_t sector_size = m_pKvDevice->capabilities.nvm_sector_size;
+    uint32_t total_iovs = 0; //num of IOVs that is already trimmed so far
+
+    iovec = new(std::nothrow)
+        nvm_iovec_t[capabilities->nvm_max_num_iovs];
+    if (iovec == NULL)
+    {
+        return -NVM_ERR_OUT_OF_MEMORY;
+    }
+    //remaining length is in bytes
+    remaining_len = discard_sec * sector_size;
+    max_trim_size_per_iov = capabilities->nvm_atomic_write_multiplicity *
+                            capabilities->nvm_max_trim_size_per_iov;
+    do
+    {
+        iovec_count = 0;
+        do
+        {
+            uint64_t temp_discard_len =
+                (remaining_len > max_trim_size_per_iov) ?
+                max_trim_size_per_iov : remaining_len;
+
+            iovec[iovec_count].iov_base = 0;
+            iovec[iovec_count].iov_len =
+                nvm_kv_round_upto_blk(temp_discard_len, sector_size);
+            iovec[iovec_count].iov_lba = del_lba + (total_iovs *
+                (max_trim_size_per_iov / sector_size));
+            iovec[iovec_count].iov_opcode = NVM_IOV_TRIM;
+            iovec_count++;
+            total_iovs++;
+            remaining_len -= temp_discard_len;
+        } while ((iovec_count < capabilities->nvm_max_num_iovs) &&
+                 remaining_len);
+       ret_code = nvm_writev(m_pKvDevice, iovec, iovec_count, true);
+       if (ret_code != NVM_SUCCESS)
+       {
+           delete[] iovec;
+           return -NVM_ERR_IO;
+       }
+   } while (remaining_len);
+
+   delete[] iovec;
+   return ret_code;
+}
+///
+///batch delete protected by safe lba list. The default operation deletes
+///the keys from both the media and the cache.
+///
+int NVM_KV_Store::batch_delete_sync(nvm_iovec_t *iovec, uint32_t iov_count,
+                                    bool delete_from_cache)
+{
+    bool wait = false;
+    set<uint64_t> cache_lba_list;
+    int ret_code = NVM_SUCCESS;
+
+    for (int i = 0; i < iov_count; i++)
+    {
+        if (insert_lba_to_safe_list(iovec[i].iov_lba, &wait))
+        {
+            if (delete_from_cache && m_cache != NULL)
+            {
+                cache_lba_list.insert(iovec[i].iov_lba);
+            }
+        }
+    }
+
+    //delete from the media
+    if ((ret_code = nvm_writev(m_pKvDevice, iovec, iov_count, true))
+        != NVM_SUCCESS)
+    {
+        fprintf(stderr, "Error deleting key(s) from the store\n");
+        ret_code = -NVM_ERR_IO;
+    }
+
+    //delete from the cache
+    if (delete_from_cache && m_cache != NULL)
+    {
+        m_cache->kv_cache_delete(cache_lba_list);
+        cache_lba_list.clear();
+    }
+
+    //since the previous insert_lba_to_safe_list always return true,
+    //i.e. lba is always inserted into the safe list, we can
+    //just delete the lba from the saft list at this point
+    for (int i = 0; i < iov_count; i++)
+    {
+        delete_lba_from_safe_list(iovec[i].iov_lba);
+    }
+
+    return ret_code;
+}
+///
+///batch delete without safe lba list protection. The function deletes
+///the keys from the media only.
+///
+int NVM_KV_Store::batch_delete(nvm_iovec_t *iovec, uint32_t iov_count)
+{
+    int ret_code = NVM_SUCCESS;
+
+    //delete from the media
+    if ((ret_code = nvm_writev(m_pKvDevice, iovec, iov_count, true))
+        != NVM_SUCCESS)
+    {
+        fprintf(stderr, "Error deleting key(s) from the store\n");
+        ret_code = -NVM_ERR_IO;
+    }
+
+    return ret_code;
+}
+///
+///delete all keys within the given range using logical range iterator
+///from the media and the cache
+///
+int NVM_KV_Store::delete_all_keys(uint64_t start_lba,
+                                  uint64_t discard_length)
+{
+    uint64_t max_trim_size_per_iov = 0;
+    uint64_t trim_len = 0;
+    nvm_logical_range_iter_t it;
+    nvm_iovec_t *iovec;
+    uint32_t num_iovs = 0;
+    nvm_block_range_t *current_range = NULL;
+    uint32_t num_ranges_found = 0;
+    uint32_t num_ranges = 0;
+    uint32_t sector_size = m_pKvDevice->capabilities.nvm_sector_size;
+    int ret_code = NVM_SUCCESS;
+
+    max_trim_size_per_iov =
+        m_pKvDevice->capabilities.nvm_atomic_write_multiplicity *
+        m_pKvDevice->capabilities.nvm_max_trim_size_per_iov;
+
+    //setup the iterator parameters
+    it.range_to_iterate.start_lba = start_lba;
+    it.range_to_iterate.length = discard_length;
+    it.max_ranges =
+        m_pKvDevice->capabilities.nvm_max_num_logical_iter_ranges;
+    it.ranges = new(std::nothrow) nvm_block_range_t[it.max_ranges];
+    if (it.ranges == NULL)
+    {
+        return -NVM_ERR_OUT_OF_MEMORY;
+    }
+    it.reserved = 0;
+    //set mask to 0 to get all lbas
+    it.filters.filter_mask = 0;
+    //pattern needs not to be set
+    it.filters.filter_pattern = 0;
+    //disable the expiry
+    it.filters.filter_expiry = 0;
+
+    //allocate iovec
+    iovec = new(std::nothrow)
+            nvm_iovec_t[m_pKvDevice->capabilities.nvm_max_num_iovs];
+    if (iovec == NULL)
+    {
+        ret_code = -NVM_ERR_OUT_OF_MEMORY;
+        goto end_kv_delete_all_keys;
+    }
+
+    //iterate through the whole user data area
+    while (true)
+    {
+        ret_code = nvm_logical_range_iterator(m_pKvDevice->nvm_handle, &it);
+        if (ret_code == -1)
+        {
+            ret_code = -NVM_ERR_INTERNAL_FAILURE;
+            goto end_kv_delete_all_keys;
+        }
+
+        num_ranges_found = ret_code;
+        if (num_ranges_found > 0)
+        {
+            num_ranges = 0;
+            current_range = it.ranges;
+            while (num_ranges < num_ranges_found)
+            {
+                //check if trim length is greater than max_trim_size_per_iov
+                trim_len = current_range->length * sector_size;
+                if (trim_len > max_trim_size_per_iov)
+                {
+                    fprintf(stderr, "Error: Corrupted key\n");
+                    ret_code = -NVM_ERR_INTERNAL_FAILURE;
+                    goto end_kv_delete_all_keys;
+                }
+
+                iovec[num_iovs].iov_base = 0;
+                iovec[num_iovs].iov_len = trim_len;
+                iovec[num_iovs].iov_lba = current_range->start_lba;
+                iovec[num_iovs].iov_opcode = NVM_IOV_TRIM;
+                num_iovs++;
+                num_ranges++;
+                current_range++;
+
+                //batch delete the keys once the iovec has been filled
+                if (num_iovs == m_pKvDevice->capabilities.nvm_max_num_iovs)
+                {
+                    if ((ret_code = batch_delete_sync(iovec, num_iovs, false))
+                        != NVM_SUCCESS)
+                    {
+                        goto end_kv_delete_all_keys;
+                    }
+                    num_iovs = 0;
+                }
+            }
+        }
+
+        if (num_ranges_found < it.max_ranges)
+        {
+            if (num_iovs)
+            {
+                ret_code = batch_delete_sync(iovec, num_iovs, false);
+            }
+            goto end_kv_delete_all_keys;
+        }
+    }
+
+end_kv_delete_all_keys:
+    if (iovec)
+    {
+        free(iovec);
+    }
+    if (it.ranges)
+    {
+        free(it.ranges);
+    }
+    return ret_code;
 }

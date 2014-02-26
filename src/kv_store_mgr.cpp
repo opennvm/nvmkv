@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------
 // NVMKV
-// |- Copyright 2012-2013 Fusion-io, Inc.
+// |- Copyright 2012-2014 Fusion-io, Inc.
 
 // This program is free software; you can redistribute it and/or modify it under
 // the terms of the GNU General Public License version 2 as published by the Free
@@ -17,7 +17,6 @@
 //----------------------------------------------------------------------------
 #include <string>
 #include <fcntl.h>
-#include <aio.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
@@ -105,14 +104,14 @@ NVM_KV_Store_Mgr* NVM_KV_Store_Mgr::instance()
 int NVM_KV_Store_Mgr::initialize()
 {
     return m_buffer_pool.initialize(NVM_KV_Buffer_Pool::M_MAX_BUFFERS,
-        NVM_KV_Buffer_Pool::M_BUFFER_LIMIT,
-        NVM_KV_Buffer_Pool::M_BUFFER_PAGE_ALIGN);
+                 NVM_KV_Buffer_Pool::M_BUFFER_LIMIT,
+                 NVM_KV_Buffer_Pool::M_BUFFER_PAGE_ALIGN);
 }
 ///
 ///initializes KV store and writes KV store metadata if necessary
 ///
 int NVM_KV_Store_Mgr::kv_open(int id, uint32_t version, uint32_t max_pools,
-                              uint32_t expiry)
+                              uint32_t expiry, uint64_t cache_size)
 {
     int32_t ret_code = NVM_SUCCESS;
     NVM_KV_Store *kv_store = NULL;
@@ -125,12 +124,14 @@ int NVM_KV_Store_Mgr::kv_open(int id, uint32_t version, uint32_t max_pools,
     nvm_kv_store_capabilities_t kv_cap;
     nvm_kv_store_metadata_t *metadata = NULL;
     bool acquired_lock = false;
+    pair<map<int, NVM_KV_Store*>::iterator, bool> map_ret_code;
+    bool nvm_release_handle_attempted = false;
 
     if (fstat(id, &stat) == -1)
     {
         fprintf(stderr, "Error, fstat failed \n");
         ret_code = -NVM_ERR_INVALID_HANDLE;
-        goto end_kv_create;
+        goto end_kv_open;
     }
 
     nvm_version.major = NVM_PRIMITIVES_API_MAJOR;
@@ -142,20 +143,20 @@ int NVM_KV_Store_Mgr::kv_open(int id, uint32_t version, uint32_t max_pools,
         fprintf(stderr, "Error: nvm_get_handle failed. (%s)\n",
                 strerror(errno));
         ret_code = -NVM_ERR_IO;
-        goto end_kv_create;
+        goto end_kv_open;
     }
 
     if ((ret_code =
         NVM_KV_Store::initialize_capabilities(handle, &kv_cap))
         != NVM_SUCCESS)
     {
-        goto end_kv_create;
+        goto end_kv_open;
     }
 
     if (nvm_get_capacity(handle, &capacity_info) < 0)
     {
         ret_code = -NVM_ERR_INTERNAL_FAILURE;
-        goto end_kv_create;
+        goto end_kv_open;
     }
     else
     {
@@ -172,31 +173,48 @@ int NVM_KV_Store_Mgr::kv_open(int id, uint32_t version, uint32_t max_pools,
     {
         fprintf(stderr, "Error, allocating for kvstore\n");
         ret_code = -NVM_ERR_OUT_OF_MEMORY;
-        goto end_kv_create;
+        goto end_kv_open;
     }
 
     pthread_mutex_lock(&m_mtx_open);
     acquired_lock = true;
     ret_code = kv_store->initialize(id, handle, kv_cap, sparse_addr_bits,
-                                    max_pools, version, expiry);
+                                    max_pools, version, expiry, cache_size);
     if (ret_code < 0)
     {
         fprintf(stderr, "Error, KV store initialization failed\n");
-        goto end_kv_create;
+        goto end_kv_open;
     }
-    metadata = kv_store->get_store_metadata();
-    if (M_DEBUG_FLAG)
-    {
-        fprintf(stderr,"kvOpen: kvstore_id = %lu, vsu_id = %d, version \
-                = %d, key_size = %d, value_size = %d, # of pools \
-                = %d\n", metadata->kv_store_id, metadata->vsu_id, \
-                metadata->version, metadata->max_key_size, \
-                metadata->max_value_size, metadata->total_no_pools);
-    }
-    m_kvMap.insert(pair<int, NVM_KV_Store*>((int) metadata->kv_store_id,
-                   kv_store));
 
-end_kv_create:
+    //if kvstore object already exists in memory, delete newly created object
+    metadata = kv_store->get_store_metadata();
+
+    map_ret_code =
+        m_kvMap.insert(pair<int, NVM_KV_Store*>((int) metadata->kv_store_id,
+                       kv_store));
+
+    if (map_ret_code.second == false)
+    {
+        if (nvm_release_handle(handle) == -1)
+        {
+            ret_code = -NVM_ERR_INTERNAL_FAILURE;
+            fprintf(stderr,
+                    "Error: nvm_release_handle failed for handle: %d. (%s)\n",
+                    handle, strerror(errno));
+        }
+        else {
+            ret_code = metadata->kv_store_id;
+        }
+        nvm_release_handle_attempted = true;
+        delete kv_store;
+        kv_store = NULL;
+    }
+    else
+    {
+        ret_code = metadata->kv_store_id;
+    }
+
+end_kv_open:
     if (acquired_lock)
     {
         pthread_mutex_unlock(&m_mtx_open);
@@ -204,12 +222,13 @@ end_kv_create:
     if (ret_code < 0)
     {
         errno = ret_code;
-        if (handle != -1)
+        if (handle != -1 && nvm_release_handle_attempted == false)
         {
             if (nvm_release_handle(handle) == -1)
             {
-                fprintf(stderr, "Error: nvm_release_handle failed. (%s)\n",
-                        strerror(errno));
+                fprintf(stderr,
+                        "Error: nvm_release_handle failed for handle: %d. (%s)\n",
+                        handle, strerror(errno));
             }
         }
         ret_code = -1;
@@ -218,10 +237,6 @@ end_kv_create:
         {
             delete kv_store;
         }
-    }
-    else
-    {
-        ret_code = metadata->kv_store_id;
     }
     return ret_code;
 }
@@ -265,30 +280,11 @@ int NVM_KV_Store_Mgr::kv_pool_delete(int kv_id, int pool_id)
 {
     int ret_code = NVM_SUCCESS;
     NVM_KV_Store *kv_store = NULL;
-    int val_flag = KV_VALIDATE_ID;
-    NVM_KV_Pool_Mgr *manager = NULL;
-    int pool_stat;
-    int all_pool_id = -1;
+    int val_flag = KV_VALIDATE_ID | KV_VALIDATE_POOL_ID;
 
-    if (kv_internal_validation(val_flag, kv_id, &kv_store, 0,
+    if (kv_internal_validation(val_flag, kv_id, &kv_store, pool_id,
                                KVPOOLDELETE, NULL, 0, NULL,
                                0, NULL, 0) != NVM_SUCCESS)
-    {
-        ret_code = -NVM_ERR_INVALID_INPUT;
-        goto end_kv_pool_delete;
-    }
-    manager = kv_store->get_pool_mgr();
-    all_pool_id = manager->get_all_poolid();
-    //Check if the pool id provided is the default pool id
-    //User is not allowed to delete this pool
-    if (pool_id == manager->get_default_poolid())
-    {
-        ret_code = -NVM_ERR_INVALID_INPUT;
-        goto end_kv_pool_delete;
-    }
-    pool_stat = manager->check_pool_status(pool_id, false);
-    if (pool_stat == POOL_NOT_IN_USE ||
-        (pool_stat == POOL_IS_INVALID && pool_id != all_pool_id))
     {
         ret_code = -NVM_ERR_INVALID_INPUT;
         goto end_kv_pool_delete;
@@ -322,20 +318,66 @@ int NVM_KV_Store_Mgr::kv_put(int id, int pool_id, nvm_kv_key_t *key,
     int val_flag = (KV_VALIDATE_ID | KV_VALIDATE_KEY | KV_VALIDATE_VALUE |
         KV_VALIDATE_POOL_ID);
     bool user_buffer_usage = false;
+    bool exists_in_cache = false;
+    bool wait = false;
     nvm_iovec_t *iovec = NULL;
     uint32_t value_offset = 0; //value offset on media
     uint32_t trim_len = 0;  //value length replaced, if key is been replaced
     uint32_t iovec_index = 0;
+    uint32_t abs_expiry = 0;
     nvm_kv_store_metadata_t *metadata = NULL;
+    NVM_KV_Cache *cache = NULL;
+    nvm_kv_cache_context cache_context;
 
     if (kv_internal_validation(val_flag, id, &kv_store, pool_id, KVPUT,
-                               key, key_len, value, value_len, NULL, 0) != NVM_SUCCESS)
+                               key, key_len, value, value_len, NULL, 0)
+                               != NVM_SUCCESS)
     {
         ret_code = -NVM_ERR_INVALID_INPUT;
         goto end_kv_put;
     }
     kv_device = kv_store->get_store_device();
     metadata = kv_store->get_store_metadata();
+    cache = kv_store->get_cache();
+
+    if (cache)
+    {
+        //Check if entry is available in the cache
+        if ((ret_code =
+            cache->kv_cache_get(key, key_len, pool_id, &cache_context))
+            == NVM_SUCCESS)
+        {
+            //If the entry does not have to be replaced and it is
+            //not expired
+            if (!replace && !cache_context.expired)
+            {
+                ret_code = -NVM_ERR_OBJECT_EXISTS;
+                goto end_kv_put;
+            }
+
+            if (cache_context.context_state == CACHE_ENTRY_FOUND)
+            {
+               if (kv_store->insert_lba_to_safe_list(cache_context.context_entry.lba, &wait))
+               {
+                   if (wait)
+                   {
+                       kv_store->delete_lba_from_safe_list(cache_context.context_entry.lba);
+                       memset(&cache_context, 0, sizeof(cache_context));
+                   }
+                   else
+                   {
+                       insert_lba = true;
+                       exists_in_cache = true;
+                   }
+               }
+               else
+               {
+                   ret_code = -NVM_ERR_INTERNAL_FAILURE;
+                   goto end_kv_put;
+               }
+            }
+        }
+    }
 
     ret_code = kv_alloc_for_write(kv_device, key_len, value, value_len, &buf,
                                   &buf_len, &num_iovs, &user_buffer_usage,
@@ -345,12 +387,25 @@ int NVM_KV_Store_Mgr::kv_put(int id, int pool_id, nvm_kv_key_t *key,
         goto end_kv_put;
     }
 
-    ret_code = kv_gen_lba(kv_store, key, key_len, pool_id, value_len,
-                          buf, replace, &trim_len, key_hash_val,
-                          insert_lba, NULL);
-    if (ret_code != NVM_SUCCESS)
+    if (!exists_in_cache)
     {
-        goto end_kv_put;
+        ret_code = kv_gen_lba(kv_store, key, key_len, pool_id, value_len,
+                              buf, replace, &trim_len, key_hash_val,
+                              insert_lba, NULL);
+
+        if (ret_code != NVM_SUCCESS)
+        {
+            goto end_kv_put;
+        }
+    }
+    else
+    {
+        if (cache_context.context_entry.value_len > value_len)
+        {
+            trim_len = cache_context.context_entry.value_len;
+        }
+
+        key_hash_val = cache_context.context_entry.lba;
     }
 
     iovec = new(std::nothrow)
@@ -376,7 +431,8 @@ int NVM_KV_Store_Mgr::kv_put(int id, int pool_id, nvm_kv_key_t *key,
     ret_code = kv_process_for_write(pool_id, key, key_len, value, value_len,
                                     buf, kv_device, (iovec + iovec_index),
                                     user_buffer_usage, expiry,
-                                    gen_count, key_hash_val, value_offset);
+                                    gen_count, key_hash_val, value_offset,
+                                    &abs_expiry);
     if (ret_code != NVM_SUCCESS)
     {
         goto end_kv_put;
@@ -388,6 +444,24 @@ int NVM_KV_Store_Mgr::kv_put(int id, int pool_id, nvm_kv_key_t *key,
         fprintf(stderr, "Error, atomic write failed in kv_put, %d\n",
                 errno);
         goto end_kv_put;
+    }
+
+    if (cache)
+    {
+        cache->kv_cache_acquire_wrlock();
+
+        //add or replace this entry in the cache.
+        ret_code =
+            cache->kv_cache_put(key, key_len, pool_id, value_len,
+                                abs_expiry, gen_count, key_hash_val,
+                                &cache_context);
+
+        cache->kv_cache_release_lock();
+
+        if (ret_code < 0)
+        {
+            fprintf(stderr, "Error, updating the cache failed in kv_put\n");
+        }
     }
 
 end_kv_put:
@@ -435,7 +509,7 @@ int NVM_KV_Store_Mgr::kv_get(int id, int pool_id, nvm_kv_key_t *key,
         KV_VALIDATE_POOL_ID);
 
     if (kv_internal_validation(val_flag, id, &kv_store, pool_id, KVGET,
-                               key, key_len, value, value_len, NULL, 0) != NVM_SUCCESS)
+        key, key_len, value, value_len, NULL, 0) != NVM_SUCCESS)
     {
         ret_code = -NVM_ERR_INVALID_INPUT;
         goto end_kv_get;
@@ -481,18 +555,7 @@ int NVM_KV_Store_Mgr::kv_get(int id, int pool_id, nvm_kv_key_t *key,
     key_info->expiry = hdr->metadata.expiry;
     key_info->key_len = hdr->key_len;
     key_info->value_len = hdr->value_len;
-    if (M_DEBUG_FLAG)
-    {
-        fprintf(stdout, "Verifying read buffer kv_key_metatdata len(%u)\
-                key gen_count (%u) key expiry (%u)\
-                total no keys (%lu)\n", hdr->metadata_len,
-                hdr->metadata.gen_count,
-                hdr->metadata.expiry, hdr->metadata.num_key);
-        fprintf(stdout, "verifying KV Header data key_len (%u) value_len (%u) \
-                \n", hdr->key_len, hdr->value_len);
-        string key_str( buf + M_KV_HEADER_SIZE, hdr->key_len);
-        fprintf(stdout, "verifying Key (%s)\n", key_str.c_str());
-    }
+
     if (hdr->value_len > value_len)
     {
         ret_read_len = value_len;
@@ -600,6 +663,48 @@ end_kv_exists:
     return ret_code;
 }
 //
+//gets all KV pairs in one batch operation
+//
+int NVM_KV_Store_Mgr::kv_batch_get(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
+                                   uint32_t iov_count)
+{
+    int ret_code = 0;
+    int val_flag = 0;
+    NVM_KV_Store *kv_store = NULL;
+    nvm_kv_key_info_t key_info;
+
+    val_flag = (KV_VALIDATE_ID | KV_VALIDATE_BATCH | KV_VALIDATE_POOL_ID);
+    if (kv_internal_validation(val_flag, id, &kv_store, pool_id, KVBATCHGET,
+                        NULL, 0, NULL, 0, kv_iov, iov_count) != NVM_SUCCESS)
+    {
+        ret_code = -NVM_ERR_INVALID_INPUT;
+        goto end_batch_get;
+    }
+
+    //Loop through all the IOVs and get the desired values
+    for (int i = 0; i < iov_count; i++)
+    {
+        ret_code = kv_get(id, pool_id, kv_iov[i].key, kv_iov[i].key_len,
+                          kv_iov[i].value, kv_iov[i].value_len, true,
+                          &key_info);
+
+        if (ret_code < 0)
+        {
+            goto end_batch_get;
+        }
+    }
+
+end_batch_get:
+
+    if (ret_code < 0 && ret_code != -1)
+    {
+        errno = ret_code;
+        ret_code = -1;
+    }
+
+    return ret_code;
+}
+//
 //puts all KV pair in one batch operation
 //
 int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
@@ -611,6 +716,7 @@ int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
     NVM_KV_Store *kv_store = NULL;
     int val_flag = 0; //parameter validation
     bool insert_lba = false;
+    bool wait = false;
     map<uint64_t, nvm_kv_iovec_t*> lba_list; //stores lba that were validated
     uint32_t final_iov_count = 0;
     char *buf = NULL; //buffer acquired from the pool
@@ -621,7 +727,12 @@ int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
     uint32_t idx_wrt = 0;
     uint32_t idx_trm = 0;
     nvm_kv_store_metadata_t *metadata = NULL;
+    NVM_KV_Cache *cache = NULL;
     uint32_t max_batch_size = 0;
+    nvm_kv_cache_context cache_context[iov_count];
+    uint64_t key_hash_val[iov_count];
+    uint32_t abs_expiry[iov_count];
+    uint32_t gen_count[iov_count];
 
 
     val_flag = (KV_VALIDATE_ID | KV_VALIDATE_BATCH | KV_VALIDATE_POOL_ID);
@@ -641,6 +752,7 @@ int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
     }
     kv_device = kv_store->get_store_device();
     metadata = kv_store->get_store_metadata();
+    cache = kv_store->get_cache();
 
     ret_buf_sizes = new(std::nothrow)
         uint32_t[kv_device->capabilities.nvm_max_num_iovs];
@@ -676,23 +788,82 @@ int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
 
     val_flag = (KV_VALIDATE_KEY | KV_VALIDATE_VALUE);
 
-   //first loop through the incoming IOVs to validate and get the buffers
+    memset(cache_context, 0, sizeof(nvm_kv_cache_context) * iov_count);
+    memset(key_hash_val, 0, sizeof(uint64_t) * iov_count);
+    memset(abs_expiry, 0, sizeof(uint32_t) * iov_count);
+    memset(gen_count, 0, sizeof(uint32_t) * iov_count);
+
+    //first loop through the incoming IOVs to validate and get the buffers
     for (int i = 0; i < iov_count; i++)
     {
         uint32_t ret_buf_size = 0;
-        uint64_t key_hash_val = 0;
         uint32_t trim_len = 0;
         bool user_buffer_usage = false;
+        bool exists_in_cache = false;
         uint32_t num_iovs = 0; //number of IOVs needed
         uint32_t value_offset = 0; //value offset on media
 
         if (kv_internal_validation(val_flag, id, &kv_store, pool_id,
-                                   KVBATCHPUT, kv_iov[i].key,
-                                   kv_iov[i].key_len, kv_iov[i].value,
-                                   kv_iov[i].value_len, NULL, 0) != NVM_SUCCESS)
+            KVBATCHPUT, kv_iov[i].key, kv_iov[i].key_len, kv_iov[i].value,
+            kv_iov[i].value_len, NULL, 0) != NVM_SUCCESS)
         {
             ret_code = -NVM_ERR_INVALID_INPUT;
             goto end_kv_batch_put;
+        }
+
+        if (cache)
+        {
+            if ((ret_code =
+                 cache->kv_cache_get(kv_iov[i].key, kv_iov[i].key_len,
+                                     pool_id, &cache_context[i]))
+                 == NVM_SUCCESS)
+            {
+                if (!kv_iov[i].replace && !cache_context[i].expired)
+                {
+                    ret_code = -NVM_ERR_OBJECT_EXISTS;
+                    goto end_kv_batch_put;
+                }
+
+                if (cache_context[i].context_state == CACHE_ENTRY_FOUND)
+                {
+                    uint64_t lba = cache_context[i].context_entry.lba;
+                    map<uint64_t, nvm_kv_iovec_t *>::iterator itr = lba_list.find(lba);
+
+                    //if lba is not present in the lba list
+                    if (itr == lba_list.end())
+                    {
+                        if (kv_store->insert_lba_to_safe_list(lba, &wait))
+                        {
+                            if (wait)
+                            {
+                                kv_store->delete_lba_from_safe_list(lba);
+                                memset(&cache_context[i], 0,
+                                       sizeof(cache_context[i]));
+                            }
+                            else
+                            {
+                                insert_lba = true;
+                                exists_in_cache = true;
+                            }
+                        }
+                        else
+                        {
+                            ret_code = -NVM_ERR_INTERNAL_FAILURE;
+                            goto end_kv_batch_put;
+                        }
+                    }
+                    else
+                    {
+                        nvm_kv_iovec_t *dup_keys = itr->second;
+
+                        if (dup_keys->key_len == kv_iov[i].key_len &&
+                            (memcmp(dup_keys->key, kv_iov[i].key, kv_iov[i].key_len) == 0))
+                        {
+                            exists_in_cache = true;
+                        }
+                    }
+                }
+            }
         }
 
         ret_code = kv_alloc_for_write(kv_device, kv_iov[i].key_len,
@@ -717,21 +888,33 @@ int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
         ret_buf_sizes[i] = ret_buf_size;
         buf_acquired++;
 
-        ret_code = kv_gen_lba(kv_store, kv_iov[i].key,
-                              kv_iov[i].key_len, pool_id,
-                              kv_iov[i].value_len, buf, kv_iov[i].replace,
-                              &trim_len, key_hash_val,
-                              insert_lba, &lba_list);
-        if (ret_code != NVM_SUCCESS)
+        if (!exists_in_cache)
         {
-            goto end_kv_batch_put;
+            ret_code = kv_gen_lba(kv_store, kv_iov[i].key,
+                                  kv_iov[i].key_len, pool_id,
+                                  kv_iov[i].value_len, buf, kv_iov[i].replace,
+                                  &trim_len, key_hash_val[i],
+                                  insert_lba, &lba_list);
+             if (ret_code != NVM_SUCCESS)
+             {
+                 goto end_kv_batch_put;
+             }
+        }
+        else
+        {
+            if (cache_context[i].context_entry.value_len > kv_iov[i].value_len)
+            {
+                trim_len = cache_context[i].context_entry.value_len;
+            }
+
+            key_hash_val[i] = cache_context[i].context_entry.lba;
         }
 
-        lba_list.insert(pair<uint64_t, nvm_kv_iovec_t*>(key_hash_val,
+        lba_list.insert(pair<uint64_t, nvm_kv_iovec_t*>(key_hash_val[i],
                                                         &kv_iov[i]));
         ret_code = kv_process_for_trim(kv_iov[i].value_len, trim_len,
                                        iovec_trm, &idx_trm,
-                                       key_hash_val, kv_device);
+                                       key_hash_val[i], kv_device);
         if (ret_code != NVM_SUCCESS)
         {
             goto end_kv_batch_put;
@@ -752,12 +935,14 @@ int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
                                         kv_iov[i].value_len, buf, kv_device,
                                         &iovec_wrt[idx_wrt], user_buffer_usage,
                                         kv_iov[i].expiry, kv_iov[i].gen_count,
-                                        key_hash_val, value_offset);
+                                        key_hash_val[i], value_offset, &abs_expiry[i]);
         if (ret_code != NVM_SUCCESS)
         {
             goto end_kv_batch_put;
         }
         idx_wrt += num_iovs;
+
+        gen_count[i] = kv_iov[i].gen_count;
     }
     //if there are any trim IOVs then club trim IOVs and write IOVs together
     //if idx_trim + idx_write is less than or equal to
@@ -783,6 +968,7 @@ int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
             goto end_kv_batch_put;
         }
     }
+
     if (!idx_trm ||
         (idx_wrt + idx_trm > kv_device->capabilities.nvm_max_num_iovs))
     {
@@ -793,6 +979,30 @@ int NVM_KV_Store_Mgr::kv_batch_put(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
                     errno);
             goto end_kv_batch_put;
         }
+    }
+
+    if (cache)
+    {
+        cache->kv_cache_acquire_wrlock();
+
+        for (int i = 0 ; i < iov_count; i++)
+        {
+            ret_code = cache->kv_cache_put(kv_iov[i].key,
+                                           kv_iov[i].key_len,
+                                           pool_id, kv_iov[i].value_len,
+                                           abs_expiry[i], gen_count[i],
+                                           key_hash_val[i],
+                                           &cache_context[i]);
+
+            if (ret_code < 0)
+            {
+                fprintf(stderr, "Error, updating the cache failed in "
+                                "kv_batch_put\n");
+                break;
+            }
+        }
+
+        cache->kv_cache_release_lock();
     }
 
 end_kv_batch_put:
@@ -837,28 +1047,21 @@ int NVM_KV_Store_Mgr::kv_begin(int id, int pool_id)
     int it_id = -1;
     int ret_code = NVM_SUCCESS;
     NVM_KV_Store *kv_store = NULL;
-    int val_flag = KV_VALIDATE_ID;
+    int val_flag = KV_VALIDATE_ID | KV_VALIDATE_POOL_ID;
     uint64_t usr_data_lba = 0;
     uint64_t MAX_VALID_SECTOR = 0;
     uint32_t pool_hash = 0;
-    NVM_KV_Pool_Mgr *manager = NULL;
 
-    if (kv_internal_validation(val_flag, id, &kv_store, 0, KVBEGIN,
-        NULL, 0, NULL, 0, NULL, 0) != NVM_SUCCESS)
+    if (kv_internal_validation(val_flag, id, &kv_store, pool_id,
+        KVBEGIN, NULL, 0, NULL, 0, NULL, 0) != NVM_SUCCESS)
     {
         ret_code = -NVM_ERR_INVALID_INPUT;
         goto kv_begin_exit;
     }
 
-    manager = kv_store->get_pool_mgr();
-    if (manager == NULL || (manager->check_pool_status(pool_id, false) !=
-        POOL_IN_USE && pool_id != manager->get_all_poolid()))
-    {
-        ret_code = -NVM_ERR_INVALID_INPUT;
-        goto kv_begin_exit;
-    }
-
-    it_id = kv_store->get_iter()->alloc_iter(KV_REGULAR_ITER);
+    pool_hash = kv_store->get_pool_mgr()->get_poolid_hash(pool_id);
+    it_id = kv_store->get_iter()->alloc_iter(KV_REGULAR_ITER, pool_id,
+                                             pool_hash);
 
     if (it_id < 0)
     {
@@ -869,11 +1072,10 @@ int NVM_KV_Store_Mgr::kv_begin(int id, int pool_id)
 
     usr_data_lba = kv_store->get_layout()->get_data_start_lba();
     MAX_VALID_SECTOR = kv_store->get_layout()->get_kv_len() - usr_data_lba;
-    pool_hash = kv_store->get_pool_mgr()->get_poolid_hash(pool_id);
     //initialize iterator params
     if ((ret_code = kv_store->get_iter()-> \
-         init_iter(it_id, pool_id, usr_data_lba, MAX_VALID_SECTOR,
-                   KV_REGULAR_ITER, pool_hash)) < 0)
+         init_iter(it_id, usr_data_lba, MAX_VALID_SECTOR,
+                   KV_REGULAR_ITER)) < 0)
     {
         goto kv_begin_exit;
     }
@@ -945,7 +1147,7 @@ int NVM_KV_Store_Mgr::kv_get_current(int id, int it_id, nvm_kv_key_t *key,
     nvm_kv_store_device_t *kv_device = NULL;
     NVM_KV_Store *kv_store = NULL;
     bool buf_acquired = false;
-    int val_flag = KV_VALIDATE_ID;
+    int val_flag = KV_VALIDATE_ID | KV_VALIDATE_VALUE;
     int ret_read_len = 0;
     nvm_iovec_t iovec[2]; //num of IOVs will not exceed 2 in case of read
     int iov_count = 0;
@@ -953,24 +1155,23 @@ int NVM_KV_Store_Mgr::kv_get_current(int id, int it_id, nvm_kv_key_t *key,
     bool user_buffer_usage = false;
 
     if (kv_internal_validation(val_flag, id, &kv_store, 0, KVGETCURRENT,
-                               NULL, 0, NULL, 0, NULL, 0) != NVM_SUCCESS)
-    {
-        ret_code = -NVM_ERR_INVALID_INPUT;
-        goto end_kv_get_current;
-    }
-    if (!key_info || !key || !key_len || !value)
+                               NULL, 0, value, value_len, NULL, 0) != NVM_SUCCESS)
     {
         ret_code = -NVM_ERR_INVALID_INPUT;
         goto end_kv_get_current;
     }
 
+    if (!key_info || !key || !key_len)
+    {
+        ret_code = -NVM_ERR_INVALID_INPUT;
+        goto end_kv_get_current;
+    }
 
     kv_device = kv_store->get_store_device();
     sector_size = kv_store->get_sector_size();
 
     while (true)
     {
-
         iov_count = 0;
         ret_code = kv_store->get_iter()->get_iter_loc(it_id, &key_loc,
             &read_len, KV_REGULAR_ITER);
@@ -1128,6 +1329,7 @@ int NVM_KV_Store_Mgr::kv_get_store_info(int kv_id,
 {
     int ret_code = NVM_SUCCESS;
     NVM_KV_Store *kv_store = NULL;
+    NVM_KV_Cache *kv_cache = NULL;
     nvm_kv_store_metadata_t *kv_store_metadata;
     nvm_capacity_t capacity_info;
     uint64_t usr_data_lba = 0;
@@ -1152,6 +1354,8 @@ int NVM_KV_Store_Mgr::kv_get_store_info(int kv_id,
     kv_store_metadata = kv_store->get_store_metadata();
     usr_data_lba = kv_store->get_layout()->get_data_start_lba();
     max_valid_sector = kv_store->get_layout()->get_kv_len() - usr_data_lba;
+
+    kv_cache = kv_store->get_cache();
 
     if (kv_store_metadata == NULL)
     {
@@ -1179,6 +1383,15 @@ int NVM_KV_Store_Mgr::kv_get_store_info(int kv_id,
     store_info->max_pools = kv_store_metadata->max_pools;
     store_info->expiry_mode = kv_store_metadata->expiry_mode;
     store_info->global_expiry = kv_store_metadata->global_expiry;
+
+    if (kv_cache)
+    {
+        store_info->cache_size = kv_cache->kv_cache_get_size();
+    }
+    else
+    {
+        store_info->cache_size = 0;
+    }
 
     return ret_code;
 }
@@ -1315,7 +1528,7 @@ int NVM_KV_Store_Mgr::kv_get_pool_info(int kv_id, int pool_id,
         errno = -NVM_ERR_INVALID_INPUT;
         return -1;
     }
-    pool_info->pool_status = manager->check_pool_status(pool_id, false);
+    pool_info->pool_status = manager->check_pool_status(pool_id);
     //current version of pool_info structure
     pool_info->version = 0;
 
@@ -1347,6 +1560,12 @@ int NVM_KV_Store_Mgr::kv_set_global_expiry(int id, uint32_t expiry)
     if (!metadata)
     {
         errno = -NVM_ERR_INTERNAL_FAILURE;
+        return -1;
+    }
+
+    if (metadata->expiry_mode != KV_GLOBAL_EXPIRY)
+    {
+        errno = -NVM_ERR_OPERATION_NOT_SUPPORTED;
         return -1;
     }
 
@@ -1382,14 +1601,17 @@ int NVM_KV_Store_Mgr::kv_get_pool_metadata(int kv_id,
         return -1;
     }
 
-    if (kv_internal_validation(KV_VALIDATE_ID, kv_id, &kv_store, 0,
+    if (kv_internal_validation(KV_VALIDATE_ID | KV_VALIDATE_POOL_ID,
+                               kv_id, &kv_store, pool_id,
                                KVGETPOOLMETADATA, NULL, 0, NULL, 0,
                                NULL, 0) != NVM_SUCCESS)
     {
         errno = -NVM_ERR_INVALID_INPUT;
         return -1;
     }
-    num_pools = kv_store->get_store_metadata()->total_no_pools;
+    //do not count the default pool as default pool does not have tag
+    num_pools =
+        kv_store->get_store_metadata()->total_no_pools - NVM_KV_MIN_POOLS;
     pool_mgr = kv_store->get_pool_mgr();
 
     for ( ;i < count && pool_id <= num_pools; i++)
@@ -1409,9 +1631,20 @@ int NVM_KV_Store_Mgr::kv_get_pool_metadata(int kv_id,
 //
 int NVM_KV_Store_Mgr::kv_delete_all(int id)
 {
+    NVM_KV_Store *kv_store = NULL;
+    int val_flag = KV_VALIDATE_ID;
     int ret_code = NVM_SUCCESS;
 
-    ret_code = kv_del_wrapper(id);
+    if (kv_internal_validation(val_flag, id, &kv_store, 0, KVDELETEWRAPPER,
+                               NULL, 0, NULL, 0, NULL, 0) != NVM_SUCCESS)
+    {
+        ret_code = -NVM_ERR_INVALID_INPUT;
+    }
+    else
+    {
+        ret_code = kv_store->delete_all();
+    }
+
     if (ret_code != NVM_SUCCESS)
     {
         errno = ret_code;
@@ -1466,7 +1699,7 @@ int NVM_KV_Store_Mgr::kv_range_exists(nvm_handle_t handle,
                                       nvm_block_range_t *search_range)
 {
     nvm_range_op_t range_exists;
-    int ret_code = 0;
+    int ret_code = NVM_SUCCESS;
 
     if (!search_range || !found_range)
     {
@@ -1488,14 +1721,12 @@ int NVM_KV_Store_Mgr::kv_range_exists(nvm_handle_t handle,
     found_range->start_lba = range_exists.range_found.start_lba;
     found_range->length = range_exists.range_found.length;
 
-    if (found_range->length)
+    if (found_range->length == 0)
     {
-        return true;
+        return -NVM_ERR_OBJECT_NOT_FOUND;
     }
-    else
-    {
-        return false;
-    }
+
+    return ret_code;
 }
 //
 //internal API which deletes key value pair on the KV store and synchronizes
@@ -1504,7 +1735,7 @@ int NVM_KV_Store_Mgr::kv_range_exists(nvm_handle_t handle,
 int NVM_KV_Store_Mgr::kv_delete_sync(int pool_id, nvm_kv_key_t *key,
                                      uint32_t key_len, NVM_KV_Store *kv_store)
 {
-    int ret_code = 0;
+    int ret_code = NVM_SUCCESS;
     char *buf = NULL;
     uint32_t ret_buf_size = 0;
     uint32_t sector_size = 0;
@@ -1515,27 +1746,53 @@ int NVM_KV_Store_Mgr::kv_delete_sync(int pool_id, nvm_kv_key_t *key,
     uint32_t value_len = 0;
     uint64_t key_hash = 0;
     nvm_kv_header_t *hdr = NULL;
+    NVM_KV_Cache *cache = NULL;
+    nvm_kv_cache_entry deleted_entry;
+    bool found_in_cache = false;
 
-    sector_size = kv_store->get_sector_size();
-
-    buf = m_buffer_pool.get_buf(sector_size, ret_buf_size);
-    if ((ret_buf_size < sector_size) || (buf == NULL))
+    cache = kv_store->get_cache();
+    if (cache)
     {
-        ret_code = -NVM_ERR_OUT_OF_MEMORY;
-        goto end_kv_delete_sync;
-    }
-    buf_acquired = true;
-
-    ret_code = kv_read_media(&hdr, pool_id, kv_store, key, key_len, value,
-            value_len, &key_hash, buf, false);
-    if (ret_code < 0)
-    {
-        //for delete, object_not_found is considered as success
-        if (ret_code == -NVM_ERR_OBJECT_NOT_FOUND)
+        if ((ret_code =
+            cache->kv_cache_delete(key, key_len, pool_id, deleted_entry))
+            != NVM_SUCCESS && ret_code != -NVM_ERR_OBJECT_NOT_FOUND)
+        {
+            fprintf(stderr, "Failed to delete from the cache.\n");
+        }
+        else if (ret_code == -NVM_ERR_OBJECT_NOT_FOUND)
         {
             ret_code = NVM_SUCCESS;
         }
-        goto end_kv_delete_sync;
+        else
+        {
+            found_in_cache = true;
+            key_hash = deleted_entry.lba;
+        }
+    }
+
+    if (!found_in_cache)
+    {
+        sector_size = kv_store->get_sector_size();
+
+        buf = m_buffer_pool.get_buf(sector_size, ret_buf_size);
+        if ((ret_buf_size < sector_size) || (buf == NULL))
+        {
+            ret_code = -NVM_ERR_OUT_OF_MEMORY;
+            goto end_kv_delete_sync;
+        }
+        buf_acquired = true;
+
+        ret_code = kv_read_media(&hdr, pool_id, kv_store, key, key_len, value,
+                value_len, &key_hash, buf, false);
+        if (ret_code < 0)
+        {
+            //for delete, object_not_found is considered as success
+            if (ret_code == -NVM_ERR_OBJECT_NOT_FOUND)
+            {
+                ret_code = NVM_SUCCESS;
+            }
+            goto end_kv_delete_sync;
+        }
     }
 
     //to make kv_delete thread safe
@@ -1543,16 +1800,48 @@ int NVM_KV_Store_Mgr::kv_delete_sync(int pool_id, nvm_kv_key_t *key,
     //when more than one thread acquire same lba, first thread which
     //gets the lock on the lba list will first delete that location
     //other threads will wait untill first thread deletes that lba
-    do
+    if (!kv_store->insert_lba_to_safe_list(key_hash, &wait))
     {
-        if (!kv_store->insert_lba_to_safe_list(key_hash, &wait))
+        ret_code = -NVM_ERR_INTERNAL_FAILURE;
+        goto end_kv_delete_sync;
+    }
+    insert_lba = true;
+
+    //If wait is true when insert_lba_to_safe_list returns, the LBA content
+    //might be changed by other thread(s), read the media again
+    if (wait)
+    {
+        if (!buf_acquired)
         {
-            ret_code = -NVM_ERR_INTERNAL_FAILURE;
+            sector_size = kv_store->get_sector_size();
+
+            buf = m_buffer_pool.get_buf(sector_size, ret_buf_size);
+            if ((ret_buf_size < sector_size) || (buf == NULL))
+            {
+                ret_code = -NVM_ERR_OUT_OF_MEMORY;
+                goto end_kv_delete_sync;
+            }
+            buf_acquired = true;
+        }
+
+        ret_code = kv_read_media(&hdr, pool_id, kv_store, key, key_len,
+                            value, value_len, &key_hash, buf, false);
+        if (ret_code < 0)
+        {
+            //for delete, object_not_found is considered as success
+            if (ret_code == -NVM_ERR_OBJECT_NOT_FOUND)
+            {
+                ret_code = NVM_SUCCESS;
+            }
             goto end_kv_delete_sync;
         }
-        insert_lba = true;
-    } while (wait);
-    ret_code = kv_delete_internal(key_hash, hdr, kv_store);
+    }
+
+    if ((ret_code = kv_delete_internal(key_hash, hdr, kv_store))
+                                        != NVM_SUCCESS)
+    {
+        goto end_kv_delete_sync;
+    }
 
 end_kv_delete_sync:
 
@@ -1573,110 +1862,10 @@ int NVM_KV_Store_Mgr::kv_delete_internal(uint64_t del_lba,
                                          nvm_kv_header_t *hdr,
                                          NVM_KV_Store *kv_store)
 {
-    int ret_code = 0;
     uint64_t num_sect = 0;
-    uint32_t pool_bits = 0;
-    nvm_kv_store_device_t *kv_device = NULL;
 
-    kv_device = kv_store->get_store_device();
-    pool_bits = kv_store->get_layout()->get_pool_bits();
     num_sect = kv_store->get_del_sec_count();
-    del_lba = nvm_kv_mask_lsb(del_lba, pool_bits);
-
-    ret_code = kv_del_range(kv_device, del_lba, num_sect);
-
-    return ret_code;
-}
-//
-//wrapper function to issue discard request
-//
-int NVM_KV_Store_Mgr::kv_del_wrapper(int id)
-{
-    NVM_KV_Store *kv_store = NULL;
-    nvm_kv_store_device_t *kv_device = NULL;
-    int val_flag = KV_VALIDATE_ID;
-    uint64_t start_sector = 0;
-    uint64_t device_size = 0;
-    int ret_code = 0;
-
-    if (kv_internal_validation(val_flag, id, &kv_store, 0, KVDELETEWRAPPER,
-                               NULL, 0, NULL, 0, NULL, 0) != NVM_SUCCESS)
-    {
-        return -NVM_ERR_INVALID_INPUT;
-    }
-    kv_device = kv_store->get_store_device();
-
-    //Discards will be issued from the beginning of the user data on
-    //complete device.
-    start_sector = kv_store->get_layout()->get_data_start_lba();
-    //device size in sectors
-    device_size  = (kv_store->get_layout()->get_kv_len() - start_sector);
-
-    ret_code = kv_del_range(kv_device, start_sector, device_size);
-    if (ret_code != NVM_SUCCESS)
-    {
-	    return ret_code;
-    }
-    //reset number of keys to zero
-    kv_store->get_store_metadata()->num_keys = 0;
-    return ret_code;
-}
-//
-//deletes range in logical address, used internally
-//
-int NVM_KV_Store_Mgr::kv_del_range(nvm_kv_store_device_t *kv_device,
-				   uint64_t del_lba,
-                                   uint64_t discard_sec)
-{
-    int ret_code = 0;
-    nvm_kv_store_capabilities_t *capabilities = &kv_device->capabilities;
-    nvm_iovec_t *iovec = NULL;
-    uint64_t max_trim_size_per_iov = 0;
-    uint32_t iovec_count = 0;
-    uint64_t remaining_len = 0;
-    uint32_t sector_size = kv_device->capabilities.nvm_sector_size;
-    uint32_t total_iovs = 0; //num of IOVs that is already trimmed so far
-
-    iovec = new(std::nothrow)
-        nvm_iovec_t[capabilities->nvm_max_num_iovs];
-    if (iovec == NULL)
-    {
-        return -NVM_ERR_OUT_OF_MEMORY;
-    }
-    //remaining length is in bytes
-    remaining_len = discard_sec * sector_size;
-    max_trim_size_per_iov = capabilities->nvm_atomic_write_multiplicity *
-                            capabilities->nvm_max_trim_size_per_iov;
-    do
-    {
-        iovec_count = 0;
-        do
-        {
-            uint64_t temp_discard_len =
-                (remaining_len > max_trim_size_per_iov) ?
-                max_trim_size_per_iov : remaining_len;
-
-            iovec[iovec_count].iov_base = 0;
-            iovec[iovec_count].iov_len =
-                nvm_kv_round_upto_blk(temp_discard_len, sector_size);
-            iovec[iovec_count].iov_lba = del_lba + (total_iovs *
-                (max_trim_size_per_iov / sector_size));
-            iovec[iovec_count].iov_opcode = NVM_IOV_TRIM;
-            iovec_count++;
-            total_iovs++;
-            remaining_len -= temp_discard_len;
-        } while ((iovec_count < capabilities->nvm_max_num_iovs) &&
-                 remaining_len);
-       ret_code = nvm_writev(kv_device, iovec, iovec_count, true);
-       if (ret_code != NVM_SUCCESS)
-       {
-           delete[] iovec;
-           return -NVM_ERR_IO;
-       }
-   } while (remaining_len);
-
-   delete[] iovec;
-   return ret_code;
+    return kv_store->delete_range(del_lba, num_sect);
 }
 //
 //helper functions used to read a KV pair for a specific key from media
@@ -1687,7 +1876,7 @@ int NVM_KV_Store_Mgr::kv_read_media(nvm_kv_header_t **header, int pool_id,
                                     uint32_t value_len, uint64_t *key_hash,
                                     char *buf, bool read_exact)
 {
-    int ret_code = 0;
+    int ret_code = NVM_SUCCESS;
     ssize_t ret_read_len;
     uint32_t sector_size = 0;
     uint32_t hash_len = 0;
@@ -1734,7 +1923,7 @@ int NVM_KV_Store_Mgr::kv_read_media(nvm_kv_header_t **header, int pool_id,
 
     do
     {
-        ret_code = true;
+        ret_code = NVM_SUCCESS;
         //if read_exact flag is true, read exact length that is written on
         //media, exact length is obtained by making range exist call
         if (read_exact && value_len)
@@ -1746,11 +1935,9 @@ int NVM_KV_Store_Mgr::kv_read_media(nvm_kv_header_t **header, int pool_id,
             search_range.start_lba = key_hash_val;
             ret_code = kv_range_exists(kv_device->nvm_handle, &found_range,
                                        &search_range);
-            if (ret_code < 0)
-            {
-                return ret_code;
-            }
-            if (ret_code)
+
+            //if range exists
+            if (ret_code == NVM_SUCCESS)
             {
                 uint32_t temp_val_len = (found_range.length * sector_size) -
                                          sector_size;
@@ -1770,10 +1957,14 @@ int NVM_KV_Store_Mgr::kv_read_media(nvm_kv_header_t **header, int pool_id,
                     iov_count = 1;
                 }
             }
-
+            else if (ret_code != -NVM_ERR_OBJECT_NOT_FOUND)
+            {
+                return ret_code;
+            }
         }
-        //range does not exists
-        if (ret_code)
+
+        //if range exists
+        if (ret_code == NVM_SUCCESS)
         {
             iovec[num_iovs - iov_count].iov_lba = key_hash_val;
             iovec[num_iovs - iov_count + 1].iov_lba = key_hash_val + 1;
@@ -1823,7 +2014,8 @@ int NVM_KV_Store_Mgr::kv_process_for_write(int pool_id, nvm_kv_key_t *key,
                                            bool user_buffer_usage,
                                            uint32_t expiry, uint32_t gen_count,
                                            uint64_t key_hash_val,
-                                           uint32_t value_offset)
+                                           uint32_t value_offset,
+                                           uint32_t *abs_expiry)
 {
     nvm_kv_header_t *hdr = NULL;
     char *val_buf = NULL;
@@ -1889,6 +2081,12 @@ int NVM_KV_Store_Mgr::kv_process_for_write(int pool_id, nvm_kv_key_t *key,
         iovec_count++;
         count++;
         remaining_len -= vector_size;
+    }
+
+    //return the absolute expiry time
+    if (abs_expiry && expiry)
+    {
+        *abs_expiry = hdr->metadata.expiry;
     }
 
     return NVM_SUCCESS;
@@ -2020,6 +2218,23 @@ int NVM_KV_Store_Mgr::kv_alloc_for_write(nvm_kv_store_device_t *kv_device,
     }
     return NVM_SUCCESS;
 }
+///
+///get the store object for the given store id
+///
+NVM_KV_Store* NVM_KV_Store_Mgr::get_store(int id)
+{
+    map<int, NVM_KV_Store*>::iterator itr;
+
+    itr = m_kvMap.find(id);
+    if (itr == m_kvMap.end())
+    {
+        return NULL;
+    }
+    else
+    {
+        return itr->second;
+    }
+}
 //
 //validation of parameters passed into APIs
 //
@@ -2034,6 +2249,7 @@ int NVM_KV_Store_Mgr::kv_internal_validation(int flag, int id,
 {
     int ret_code = 0;
     map<int, NVM_KV_Store*>::iterator blk_itr;
+    NVM_KV_Pool_Mgr *pool_mgr = NULL;
 
     if (flag & KV_VALIDATE_ID)
     {
@@ -2047,10 +2263,23 @@ int NVM_KV_Store_Mgr::kv_internal_validation(int flag, int id,
         *kv_store = blk_itr->second;
         if (flag & KV_VALIDATE_POOL_ID)
         {
-            if ((*kv_store)->get_pool_mgr()->check_pool_status(pool_id, false)
-                != POOL_IN_USE)
+            pool_mgr = (*kv_store)->get_pool_mgr();
+
+            if (api == KVGETPOOLMETADATA || api == KVPOOLDELETE)
             {
-                fprintf(stderr, "Error, validation failed, pool id"
+                if (pool_id == pool_mgr->get_default_poolid())
+                {
+                    fprintf(stderr, "Error, validation failed, pool id "
+                            "%u incorrect\n", pool_id);
+                    ret_code = -NVM_ERR_INVALID_INPUT;
+                    goto end_kv_validation;
+                }
+            }
+
+            if (pool_mgr->check_pool_status(pool_id) != POOL_IN_USE
+                && pool_id != pool_mgr->get_all_poolid())
+            {
+                fprintf(stderr, "Error, validation failed, pool id "
                         "%u incorrect\n", pool_id);
                 ret_code = -NVM_ERR_INVALID_INPUT;
                 goto end_kv_validation;
@@ -2079,7 +2308,8 @@ int NVM_KV_Store_Mgr::kv_internal_validation(int flag, int id,
         }
         //if the API is kv_get and the value_len is not multiple of
         //sector_size, return error
-        if ((api == KVGET) && (value_len & (sector_size - 1)))
+        if (((api == KVGET) || (api == KVBATCHGET))
+             && (value_len & (sector_size - 1)))
         {
             ret_code = -NVM_ERR_INVALID_INPUT;
             goto end_kv_validation;
@@ -2118,6 +2348,7 @@ int NVM_KV_Store_Mgr::kv_gen_lba(NVM_KV_Store *kv_store, nvm_kv_key_t *key,
                                  map<uint64_t, nvm_kv_iovec_t*> *lba_list)
 {
     uint32_t hash_itr = 1;
+    bool read_retry = false;
     uint64_t key_hash_val_init = 0;
     int ret_code = 0;
     nvm_kv_store_device_t *kv_device = kv_store->get_store_device();
@@ -2133,7 +2364,7 @@ int NVM_KV_Store_Mgr::kv_gen_lba(NVM_KV_Store *kv_store, nvm_kv_key_t *key,
     *trim_len = 0;
     //generate hash
     key_hash_val = hash_func->key_hash((uint8_t *) key, key_len, pool_id,
-                                        hash_len, true);
+                                       hash_len, true);
     key_hash_val_init = key_hash_val;
     key_hash_val |= pool_hash;
     //already LBA is been used by other key within same batch
@@ -2181,12 +2412,8 @@ int NVM_KV_Store_Mgr::kv_gen_lba(NVM_KV_Store *kv_store, nvm_kv_key_t *key,
         search_range.start_lba = key_hash_val;
         ret_code = kv_range_exists(kv_store->get_store_device()->nvm_handle,
                                    &found_range, &search_range);
-        if (ret_code < 0)
-        {
-            return -NVM_ERR_INTERNAL_FAILURE;
-        }
         //range does not exists
-        if (ret_code == 0)
+        if (ret_code == -NVM_ERR_OBJECT_NOT_FOUND)
         {
             //to make kvPut thread safe
             //insert lba in the thread safe lba list before writing
@@ -2203,48 +2430,127 @@ int NVM_KV_Store_Mgr::kv_gen_lba(NVM_KV_Store *kv_store, nvm_kv_key_t *key,
                 break;
             }
         }
-        iovec.iov_base = (uint64_t) buf;
-        iovec.iov_len = sector_size;
-        iovec.iov_lba = key_hash_val;
-        ret_read_len = nvm_readv(kv_device, &iovec, iov_count);
-        if (ret_read_len < 0)
+        else if (ret_code != NVM_SUCCESS)
         {
-            fprintf(stderr, "Error, reading data buffer, \
-                    %d bytes read out of %d\n", (int) ret_read_len,
-                    sector_size);
-            return ret_read_len;
+            return -NVM_ERR_INTERNAL_FAILURE;
         }
-        if ((hdr->key_len == key_len) &&
-            (memcmp(buf + M_KV_HEADER_SIZE, key, key_len) == 0) &&
-            (hdr->pool_id == pool_id))
+
+        do
         {
-            ret_code = kv_expire(key, kv_store, hdr, &key_hash_val, del_exp);
-            if (ret_code < 0)
+            iovec.iov_base = (uint64_t) buf;
+            iovec.iov_len = sector_size;
+            iovec.iov_lba = key_hash_val;
+            ret_read_len = nvm_readv(kv_device, &iovec, iov_count);
+            if (ret_read_len < 0)
             {
-                if (ret_code == -NVM_ERR_OBJECT_NOT_FOUND)
-                {
-                    //key is expired, so allow put to proceed
-                    //return success here
-                    ret_code = NVM_SUCCESS;
-                }
-                return ret_code;
+                fprintf(stderr, "Error, reading data buffer, \
+                        %d bytes read out of %d\n", (int) ret_read_len,
+                        sector_size);
+                return ret_read_len;
             }
 
-            //key is not expired, check for replace
-            if (replace)
+            if ((hdr->key_len == key_len) &&
+                 (memcmp(buf + M_KV_HEADER_SIZE, key, key_len) == 0) &&
+                 (hdr->pool_id == pool_id))
             {
-                //discovered a duplicate key, so replace
-                if (hdr->value_len > value_len)
+                ret_code = kv_expire(key, kv_store, hdr, &key_hash_val,
+                                     del_exp);
+                if (ret_code < 0)
                 {
-                    *trim_len = hdr->value_len;
-                }
+                    if (ret_code == -NVM_ERR_OBJECT_NOT_FOUND)
+                    {
+                        //key is expired, so allow put to proceed
+                        //return success here
+                        if (!insert_lba)
+                        {
+                            if (!kv_store->insert_lba_to_safe_list(key_hash_val,
+                                                                   &wait))
+                            {
+                               return -NVM_ERR_INTERNAL_FAILURE;
+                            }
+
+                            insert_lba = true;
+
+                            //check if we had to wait on the safe list. If
+                            //we did, that means another thread has got here
+                            //first, so keep the LBA in the safe list and
+                            //retry the read
+                            if (wait)
+                            {
+                                read_retry = true;
+                                continue;
+                            }
+                        }
+                        ret_code = NVM_SUCCESS;
+                    }
+
+                    return ret_code;
+                 }
+
+                 //key is not expired, check for replace
+                 if (replace)
+                 {
+                     //add the LBA to the safe list if not already inserted
+                     if (!insert_lba)
+                     {
+                         if (!kv_store->insert_lba_to_safe_list(key_hash_val,
+                                                                &wait))
+                         {
+                             return -NVM_ERR_INTERNAL_FAILURE;
+                         }
+
+                         insert_lba = true;
+
+                         if (!wait)
+                         {
+                             if (hdr->value_len > value_len)
+                             {
+                                 *trim_len = hdr->value_len;
+                             }
+
+                             break;
+                         }
+
+                         read_retry = true;
+                         continue;
+                     }
+                     else
+                     {
+                         //discovered a duplicate key, so replace
+                         if (hdr->value_len > value_len)
+                         {
+                             *trim_len = hdr->value_len;
+                         }
+                     }
+                 }
+                 else
+                 {
+                     return -NVM_ERR_OBJECT_EXISTS;
+                 }
+                 break;
             }
             else
             {
-                return -NVM_ERR_OBJECT_EXISTS;
+                //The keys don't match, we need to look for a different
+                //LBA
+                if (insert_lba)
+                {
+                    kv_store->delete_lba_from_safe_list(key_hash_val);
+                    insert_lba = false;
+                }
+
+                read_retry = false;
+                break;
             }
+        } while (read_retry);
+
+        //The LBA has been inserted into the safe list, which means we
+        //are all set to work on that LBA, so break
+        if (insert_lba)
+        {
             break;
         }
+
         //continue to rehash to find the new LBA
         key_hash_val = hash_func->resolve_coll((uint8_t *) key, key_len,
                                                 pool_id, key_hash_val_init,
@@ -2318,7 +2624,7 @@ int NVM_KV_Store_Mgr::kv_expire(nvm_kv_key_t *key, NVM_KV_Store *kv_store,
 	}
 	ret_code =
             ((NVM_KV_Async_Expiry *)(kv_store->get_async_expiry_thread()))
-            ->update_expiry_queue(*key_loc);
+            ->update_expiry_queue(*key_loc, hdr);
 
         if (ret_code < 0)
         {
@@ -2364,10 +2670,17 @@ int NVM_KV_Store_Mgr::kv_range_exist_wrapper(NVM_KV_Store *kv_store,
     int iov_count = 1;
     NVM_KV_Hash_Func *hash_func = NULL;
 
-    if ((api == KVGETVALLEN) && !max_val_len)
+    if (api == KVGETVALLEN)
     {
-        ret_code = -NVM_ERR_INVALID_INPUT;
-        goto end_kv_get_val_wrapper;
+        if (max_val_len == NULL)
+        {
+            ret_code = -NVM_ERR_INVALID_INPUT;
+            goto end_kv_range_exist_wrapper;
+        }
+        else
+        {
+            *max_val_len = 0;
+        }
     }
 
     hash_len = kv_store->get_layout()->get_key_bits();
@@ -2382,7 +2695,7 @@ int NVM_KV_Store_Mgr::kv_range_exist_wrapper(NVM_KV_Store *kv_store,
         if ((ret_buf_size < sector_size) || buf == NULL)
         {
             ret_code = -NVM_ERR_OUT_OF_MEMORY;
-            goto end_kv_get_val_wrapper;
+            goto end_kv_range_exist_wrapper;
         }
         buf_acquired = true;
         *hdr = (nvm_kv_header_t *) buf;
@@ -2400,45 +2713,48 @@ int NVM_KV_Store_Mgr::kv_range_exist_wrapper(NVM_KV_Store *kv_store,
         search_range.start_lba = key_hash_val;
         ret_code = kv_range_exists(kv_device->nvm_handle, &found_range,
                                    &search_range);
-        if (ret_code < 0)
+        if (ret_code < 0 && ret_code != -NVM_ERR_OBJECT_NOT_FOUND)
         {
             ret_code = -NVM_ERR_INTERNAL_FAILURE;
-            goto end_kv_get_val_wrapper;
+            goto end_kv_range_exist_wrapper;
         }
 
         //if there exists KV pair read and compare
         //for call from kv_exists
-        if (ret_code && api == KVEXISTS)
+        if (ret_code == NVM_SUCCESS)
         {
-            iovec.iov_base = (uint64_t) buf;
-            iovec.iov_len = sector_size;
-            iovec.iov_lba = key_hash_val;
-            read_bytes = nvm_readv(kv_device, &iovec, iov_count);
-            if (read_bytes < 0)
+            if (api == KVEXISTS)
             {
-                fprintf(stderr, "Error, reading data buffer failed during"
-                        "exists call\n");
-                ret_code = read_bytes;
-                goto end_kv_get_val_wrapper;
-            }
+                iovec.iov_base = (uint64_t) buf;
+                iovec.iov_len = sector_size;
+                iovec.iov_lba = key_hash_val;
+                read_bytes = nvm_readv(kv_device, &iovec, iov_count);
+                if (read_bytes < 0)
+                {
+                    fprintf(stderr, "Error, reading data buffer failed during"
+                            "exists call\n");
+                    ret_code = read_bytes;
+                    goto end_kv_range_exist_wrapper;
+                }
 
-            if ((read_bytes > 0 ) && ((*hdr)->key_len == key_len) &&
-                (memcmp(buf + M_KV_HEADER_SIZE, key, key_len) == 0) &&
-                ((*hdr)->pool_id == pool_id))
-            {
-                //if the key is expired, return error to the user
-                ret_code = kv_expire(key, kv_store, *hdr, &key_hash_val, true);
-                goto end_kv_get_val_wrapper;
+                if ((read_bytes > 0 ) && ((*hdr)->key_len == key_len) &&
+                    (memcmp(buf + M_KV_HEADER_SIZE, key, key_len) == 0) &&
+                    ((*hdr)->pool_id == pool_id))
+                {
+                    //if the key is expired, return error to the user
+                    ret_code = kv_expire(key, kv_store, *hdr, &key_hash_val, true);
+                    goto end_kv_range_exist_wrapper;
+                }
             }
-        }
-        else if (api == KVGETVALLEN)
-        {
-            //update the max value
-            if (found_range.length > *max_val_len)
+            else if (api == KVGETVALLEN)
             {
-                //update the maximum value length seen
-                //so far
-                *max_val_len = found_range.length;
+                //update the max value
+                if (found_range.length > *max_val_len)
+                {
+                    //update the maximum value length seen
+                    //so far
+                    *max_val_len = found_range.length;
+                }
             }
         }
         key_hash_val = hash_func->resolve_coll((uint8_t *)key, key_len,
@@ -2447,13 +2763,18 @@ int NVM_KV_Store_Mgr::kv_range_exist_wrapper(NVM_KV_Store *kv_store,
         key_hash_val |= pool_hash;
     } while(hash_itr++ < M_MAX_COLLISION);
 
+    if (api == KVGETVALLEN && *max_val_len > 0)
+    {
+        ret_code = NVM_SUCCESS;
+    }
+
     //key was not found by completing the full iteration
     if ((hash_itr > M_MAX_COLLISION) && (api == KVEXISTS))
     {
         ret_code = -NVM_ERR_OBJECT_NOT_FOUND;
     }
 
-end_kv_get_val_wrapper:
+end_kv_range_exist_wrapper:
     if(buf_acquired && ret_buf_size)
     {
        m_buffer_pool.release_buf(buf, ret_buf_size);

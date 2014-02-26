@@ -33,15 +33,15 @@ inline uint64_t nvm_kv_round_upto_blk(uint64_t value, uint64_t blk_size)
     return ((value + (blk_size - 1)) & ~(blk_size - 1));
 }
 ///
-///utility function used to mask lower order bits
+///utility function used to mask/clear lower order bits
 ///
 ///@param[in] value  input value that needs to be masked
 ///@param[in] lsb    number of lower order bits that needs to be masked
-///@return           value obtained after masking lower order bits
+///@return           value obtained after masking/clearing lower order bits
 ///
 inline uint64_t nvm_kv_mask_lsb(uint64_t value, uint32_t lsb)
 {
-    return (value &(~ ((uint64_t)1) << lsb));
+    return (value & ~(((uint64_t)1 << lsb) - 1));
 }
 ///
 ///function facilitates rounding of input to 32

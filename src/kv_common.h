@@ -19,11 +19,13 @@
 #define KV_COMMON_H_
 #include "util/kv_util.h"
 #include "include/kv_macro.h"
+#include "include/nvm_kv.h"
 #include <nvm_types.h>
 #include <nvm_primitives.h>
 #include <map>
 #include <string>
 #include <string.h>
+#include <time.h>
 using namespace std;
 
 ///
@@ -44,7 +46,11 @@ typedef struct
     uint64_t nvm_sector_size;                ///< sector size in bytes
     uint64_t nvm_max_num_logical_iter_ranges;///< max number of logical
                                              ///< iterator ranges
+    uint64_t nvm_atomic_write_max_total_size;///< max total size of an atomic
+                                             ///< write in bytes
 } nvm_kv_store_capabilities_t;
+static_assert((sizeof(nvm_kv_store_capabilities_t) % 8 == 0),
+                    "nvm_kv_store_capabilities_t is not byte aligned");
 ///
 ///metadata associated with each key in KV store
 ///
@@ -142,6 +148,7 @@ enum nvm_kv_api
     KVDELETEALL,
     KVCLOSE,
     KVEXISTS,
+    KVBATCHGET,
     KVBATCHPUT,
     KVBEGIN,
     KVNEXT,
@@ -167,6 +174,43 @@ typedef struct
     uint64_t pos;               ///< iterator position in fetched ranges
     nvm_logical_range_iter_t it;///< NVM iterator variable
 } kv_batch_iterator_t;
+///
+///NVMKV cache entry
+///
+typedef struct
+{
+    nvm_kv_key_t key[NVM_KV_MAX_KEY_SIZE]; ///< key that needs to be written in the cache
+    uint32_t key_len;                      ///< length of the key
+    uint32_t value_len;                    ///< length of the value
+    uint32_t pool_id;                      ///< pool id associated with the key
+    uint32_t expiry;                       ///< expiry in seconds
+    uint32_t gen_count;                    ///< generation count
+    uint32_t reserved;                     ///< reserved field
+    uint64_t index;                        ///< index into the cache
+    uint64_t lba;                          ///< LBA associated with the key
+    time_t   ts;                           ///< timestamp of when the entry was stored in
+                                           ///< the cache
+} nvm_kv_cache_entry;
+///
+///NVMKV cache context state
+///
+typedef enum nvm_kv_entry_state
+{
+    CACHE_ENTRY_NOT_FOUND = 0,  ///< cache entry not found
+    CACHE_ENTRY_EMPTY,          ///< an empty cache entry candidate
+    CACHE_ENTRY_FOUND,          ///< matching cache entry is found
+    CACHE_ENTRY_DELETE          ///< cache entry needs to be deleted
+} nvm_kv_entry_state;
+///
+///NVMKV cache context
+///
+typedef struct
+{
+    nvm_kv_cache_entry context_entry; ///< cache entry associated with the
+                                      ///< context
+    nvm_kv_entry_state context_state; ///< state of the cache entry
+    bool expired;                     ///< whether entry is expired or not
+} nvm_kv_cache_context;
 ///
 ///enum declaration for iterator types
 ///

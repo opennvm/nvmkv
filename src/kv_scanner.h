@@ -56,6 +56,35 @@ class NVM_KV_Scanner
         ///
         int initialize(int iter_type);
         ///
+        ///locks mutex
+        ///
+        void lock_mutex();
+        ///
+        ///unlocks mutex
+        ///
+        void unlock_mutex();
+        ///
+        ///signals the scanner to wake up if asleep
+        ///
+        virtual void restart_scanner_if_asleep();
+        ///
+        ///virtual function which is overridden to exit threads by derived
+        ///classes
+        ///
+        ///@return              none
+        ///
+        void cleanup_threads();
+        ///
+        ///gets kvstore object
+        ///
+        ///@return  returns m_kv_store
+        ///
+        NVM_KV_Store* get_store();
+
+    protected:
+        //disbale copy constructor and assignment operator
+        DISALLOW_COPY_AND_ASSIGN(NVM_KV_Scanner);
+        ///
         ///a wrapper around start_thread routine to pass to pthread_create
         ///
         ///@param[in] arg       argument needed for thread handler
@@ -81,13 +110,6 @@ class NVM_KV_Scanner
         ///
         static void scanner_cancel_routine(void *arg);
         ///
-        ///virtual function which is overridden to exit threads by derived
-        ///classes
-        ///
-        ///@return              none
-        ///
-        void cleanup_threads();
-        ///
         ///scans drive for next available key
         ///
         ///@param[out] key_loc   location of the key filled by the routine
@@ -103,21 +125,46 @@ class NVM_KV_Scanner
         ///
         int reset_iterator();
         ///
-        ///signals the scanner to wake up if asleep
-        ///
-        virtual void restart_scanner_if_asleep();
-        ///
         ///scanner waits on a conditional variable for the trigger
         ///
         virtual void wait_for_trigger();
+
         ///
-        ///locks mutex
+        ///gets scanner buffer pool
         ///
-        void lock_mutex();
+        ///@return  returns m_buffer_pool
         ///
-        ///unlocks mutex
+        NVM_KV_Buffer_Pool* get_buf_pool();
         ///
-        void unlock_mutex();
+        ///gets scanner iovec member variable
+        ///
+        ///@return  returns m_iovec
+        ///
+        nvm_iovec_t* get_iovec();
+        ///
+        ///gets iterator type
+        ///
+        ///@return  returns m_iter_type
+        ///
+        int get_iter_type();
+        ///
+        ///gets iterator id
+        ///
+        ///@return the id of the iterator used by the scanner
+        ///
+        int get_iter_id();
+        ///
+        ///gets mutex associated with scanner
+        ///
+        ///@return returns m_cond_mtx
+        ///
+        pthread_mutex_t* get_mutex();
+        ///
+        ///gets scanner condition variable
+        ///
+        ///@return returns m_cond_var
+        ///
+        pthread_cond_t* get_cond_var();
         ///
         ///This function checks the key for its expiry as well as
         ///fills the pool id the key belongs to. This is used by
@@ -133,55 +180,6 @@ class NVM_KV_Scanner
         ///                     Returns -1 if any error
         ///
         int is_valid_for_del(uint64_t key_loc, uint32_t *pool_id);
-        ///
-        ///issues batch trim
-        ///
-        ///@param[in] iovec      array of keys which are expired
-        ///@param[in] iov_count  number of keys which need to be trimmed
-        ///
-        ///@return               returns 0 if successful, else returns -1
-        ///
-        int batch_discard(nvm_iovec_t *iovec, uint32_t iov_count);
-
-    protected:
-        //disbale copy constructor and assignment operator
-        DISALLOW_COPY_AND_ASSIGN(NVM_KV_Scanner);
-        ///
-        ///gets scanner buffer pool
-        ///
-        ///@return  returns m_buffer_pool
-        ///
-        NVM_KV_Buffer_Pool* get_buf_pool();
-        ///
-        ///gets scanner iovec member variable
-        ///
-        ///@return  returns m_iovec
-        ///
-        nvm_iovec_t* get_iovec();
-        ///
-        ///gets kvstore object
-        ///
-        ///@return  returns m_kv_store
-        ///
-        NVM_KV_Store* get_store();
-        ///
-        ///gets iterator type
-        ///
-        ///@return  returns m_iter_type
-        ///
-        int get_iter_type();
-        ///
-        ///gets mutex associated with scanner
-        ///
-        ///@return returns m_cond_mtx
-        ///
-        pthread_mutex_t* get_mutex();
-        ///
-        ///gets scanner condition variable
-        ///
-        ///@return returns m_cond_var
-        ///
-        pthread_cond_t* get_cond_var();
 
     private:
         static const uint32_t M_MAX_BUFFERS_IN_POOL = 8; ///< maximum number of buffers in buffer pool

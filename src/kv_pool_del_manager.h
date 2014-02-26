@@ -19,6 +19,9 @@
 #define KV_POOL_DEL_MANAGER_H_
 
 #include "src/kv_scanner.h"
+#include "util/kv_bitmap.h"
+
+using namespace kv_bitmap;
 
 ///
 ///class that defines an object that will
@@ -41,6 +44,12 @@ class NVM_KV_Pool_Del_Manager: public NVM_KV_Scanner
         //
         ~NVM_KV_Pool_Del_Manager();
         ///
+        ///initializes the pool deletion manager
+        ///
+        ///@return  returns 0 on success or appropriate error
+        ///
+        int initialize();
+        ///
         ///the routine that starts pool deletion
         ///
         void* start_thread();
@@ -48,21 +57,29 @@ class NVM_KV_Pool_Del_Manager: public NVM_KV_Scanner
         ///start traversing through the complete range of key
         ///delete kv pairs that belong to the pool in pool deletion map
         ///
+        ///@param[in]   flag if there's a request to delete all user created pools
+        ///
         ///@return       return success on successfully deleting keys from pools
         ///              that are in delete map in one pass, returns object not
         ///              found error when end of the key range is reached or
         ///              other appropriate error is returned
         ///
-        int start_pool_delete();
-        ///
-        ///function specific to deletion of keys in a pool
-        ///
-        ///@param[in] key_loc  location of key to delete
-        ///@param[in] len      length of region to be deleted.
-        ///@return             Returns 0 on success and appropriate
-        ///                    error on failure.
-        ///
-        int delete_key_in_pool(uint64_t key_loc, uint64_t len);
+        int start_pool_delete(bool delete_all_pools);
 
+    private:
+        ///
+        ///delete all keys from the media for the given pool id
+        ///
+        ///@param[in] pool_id pool_id whose keys to be deleted
+        ///@param[in] validate_pool_id_on_media check pool id from the media
+        ///@return    NVM_SUCCESS or appropriate error code
+        ///
+        int delete_pool(int pool_id, bool validate_pool_id_on_media);
+
+        kv_bitmap_t *m_pools_to_delete;   ///<pools in progress in a bitmap
+        bool m_validate_pool_id_on_media; ///<need to read pool id from media before deletion
+        uint64_t m_usr_data_start_lba;    ///<starting lba of user data
+        uint64_t m_usr_data_max_lba;      ///<max lba of user data
+        nvm_logical_range_iter_t m_iter;  ///<logical range iterator to walk on pools
 };
 #endif //KV_POOL_DEL_MANAGER_H

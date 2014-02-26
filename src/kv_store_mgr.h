@@ -75,7 +75,7 @@ class NVM_KV_Store_Mgr
         ///                     appropriate error code is set on error
         ///
         int kv_open(int id, uint32_t version, uint32_t max_pools,
-                    uint32_t expiry);
+                    uint32_t expiry, uint64_t cache_size);
         ///
         ///create a new pool with in KV store
         ///
@@ -121,7 +121,7 @@ class NVM_KV_Store_Mgr
                    void *value, uint32_t value_len, uint32_t expiry,
                    bool replace, uint32_t gen_count);
         ///
-        ///retireves metadata information about a KV store
+        ///retrieves metadata information about a KV store
         ///
         ///@param[in]  kv_id      KV store id
         ///@param[out] store_info structure used to store information about
@@ -199,6 +199,19 @@ class NVM_KV_Store_Mgr
         ///
         int kv_delete(int id, int pool_id, nvm_kv_key_t *key,
                       uint32_t key_len);
+        ///
+        ///gets all kv pair in one batch operation
+        ///
+        ///@param[in] id        KV store id
+        ///@param[in] pool_id   pool id, if set to 0 operation is done on
+        ///                     default pool
+        ///@param[in] kv_iov    vector of key value pair
+        ///@param[in] iov_count number of IOVs in the vector
+        ///@return              returns 0 on success or (-1) on
+        ///                     error and appropriate errno is set
+        ///
+        int kv_batch_get(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
+                         uint32_t iov_count);
         ///
         ///puts all kv pair in one batch operation
         ///
@@ -335,14 +348,13 @@ class NVM_KV_Store_Mgr
 
     private:
         static pthread_mutex_t m_mtx;                 ///< mutex used for synchronizing creation of this class
-        static const bool M_DEBUG_FLAG = false;       ///< flag for debugging
         static NVM_KV_Store_Mgr *m_pInstance;         ///< instance of KV store
         static const uint32_t M_MAX_COLLISION = 8;    ///< maximum number of
                                                       ///< times collision is
                                                       ///< resolved
         static const uint32_t M_KV_HEADER_SIZE = sizeof(nvm_kv_header_t);///<KV
                                                       ///< header size
-        //disbale copy constructor and assignment operator
+        //disable copy constructor and assignment operator
         DISALLOW_COPY_AND_ASSIGN(NVM_KV_Store_Mgr);
         ///
         ///Initializes mutex
@@ -358,6 +370,14 @@ class NVM_KV_Store_Mgr
         ///@return  returns 0 on success or appropriate error
         ///
         int initialize();
+        ///
+        ///get the store object for the given store id
+        ///
+        ///@param[in]   id      store id
+        ///
+        ///@return      the kv store object
+        ///
+        NVM_KV_Store* get_store(int id);
         ///
         ///validation of parameters passed into APIs like kvGet, kvPut is done.
         ///num_arg, device_info and fd are mandatory required arguments that
@@ -458,13 +478,6 @@ class NVM_KV_Store_Mgr
         int kv_delete_internal(uint64_t del_lba, nvm_kv_header_t *hdr,
                                NVM_KV_Store *kv_store);
         ///
-        ///wrapper function called to issue discard on specific range
-        ///
-        ///@param[in] id    KV store id to validate
-        ///@return          returns 0 on success or appropriate error
-        ///
-        int kv_del_wrapper(int id);
-        ///
         ///issues exist call before writing on to the LBA, also fetch next
         ///available LBA
         ///
@@ -512,9 +525,10 @@ class NVM_KV_Store_Mgr
         ///@param[out] found_range   discovered range
         ///@param[in]  search_range  range to be searched for
         ///                          contiguous data range
-        ///@return                   0 if range does not exists, 1 if range
-        ///                          exists or appropriate error code in case
-        ///                          of error scenarios
+        ///@return                   NVM_SUCCESS if range exists, or
+        ///                          appropriate error code in case
+        ///                          of range not found or other error
+        ///                          scenarios
         ///
         int kv_range_exists(int fd, nvm_block_range_t *found_range,
                             nvm_block_range_t *search_range);
@@ -598,6 +612,7 @@ class NVM_KV_Store_Mgr
         ///@param[in] key_hash_val      LBA calculated for the write
         ///@param[in] value_offset      offset where value exactly starts
         ///                             within KV pair
+        ///@param[out] abs_expiry       absolute expiry time in seconds
         ///@return                      returns 0 on success or error code on
         ///                             error.
         ///
@@ -608,7 +623,8 @@ class NVM_KV_Store_Mgr
                                  nvm_iovec_t *iovec,
                                  bool user_buffer_usage,
                                  uint32_t expiry, uint32_t gen_count,
-                                 uint64_t key_hash_val, uint32_t value_offset);
+                                 uint64_t key_hash_val, uint32_t value_offset,
+                                 uint32_t *abs_expiry);
         ///
         ///helper method used to pre-process IOVs for trim, used in APIs like
         ///kv_put, kv_batch_put to trim extra sector incase of replace
@@ -627,17 +643,6 @@ class NVM_KV_Store_Mgr
                                 nvm_iovec_t *iovec, uint32_t *iovec_count,
                                 uint64_t lba,
                                 nvm_kv_store_device_t *kv_device);
-        ///
-        ///this is internal API used only by public functions like kv_delete
-        ///
-        ///@param[in]  kv_device   pointer to the device object
-        ///@param[in]  del_lba     lba that needs to be trimmed
-        ///@param[in]  discard_len value length that needs to be trimmed
-        ///@return                 NVM_SUCCESS or appropriate error code
-        ///
-        static int kv_del_range(nvm_kv_store_device_t *kv_device,
-                                uint64_t del_lba,
-                                uint64_t discard_len);
         ///
         ///internal API used for checking if the key is expired or not.
         ///If it is, delete is issued on that perticular key

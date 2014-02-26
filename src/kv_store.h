@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------
 // NVMKV
-// |- Copyright 2012-2013 Fusion-io, Inc.
+// |- Copyright 2012-2014 Fusion-io, Inc.
 
 // This program is free software; you can redistribute it and/or modify it under
 // the terms of the GNU General Public License version 2 as published by the Free
@@ -19,6 +19,7 @@
 #define KV_STORE_H_
 #include "src/kv_layout.h"
 #include "src/kv_pool_manager.h"
+#include "src/kv_cache.h"
 #include <nvm_primitives.h>
 #include "util/kv_sync_list.h"
 
@@ -55,12 +56,14 @@ class NVM_KV_Store
         ///                            KV_DISABLE_EXPIRY(0)   - Disable the expiry
         ///                            KV_ARBITRARY_EXPIRY(1) - Enable arbitraty expiry
         ///                            KV_GLOBAL_EXPIRY(2)    - Enable global expiry
+        ///@param[in] cache_size       amount of memory (in bytes) to be
+        ///                            allocated for the collision cache
         ///
         ///@return                     returns 0 on success or appropriate error
         ///
         int initialize(int kv_id, nvm_handle_t handle, nvm_kv_store_capabilities_t cap,
                        uint32_t sparse_addr_bits, uint32_t max_pools,
-                       uint32_t version, uint32_t expiry);
+                       uint32_t version, uint32_t expiry, uint64_t cache_size);
         ///
         ///fetches the layout object
         ///
@@ -79,6 +82,12 @@ class NVM_KV_Store
         ///@return     address of pool manager object
         ///
         NVM_KV_Pool_Mgr* get_pool_mgr();
+        ///
+        ///fetches collision cache object
+        ///
+        ///@return     address of collision cache object
+        ///
+        NVM_KV_Cache* get_cache();
         ///
         ///fetches the KV store device object
         ///
@@ -155,11 +164,12 @@ class NVM_KV_Store
         ///
         int persist_kv_metadata();
         ///
-        ///initializes expiry related scanner
+        ///create and initialize expiry related scanners and pool deletion
+        ///scanner
         ///
         ///@return              returns 0 if successful, else -1
         ///
-        int init_expiry_scanners();
+        int init_scanners();
         ///
         ///getter function of asynchronous expiry instance
         ///
@@ -189,20 +199,68 @@ class NVM_KV_Store
         ///                  else returns false
         ///
         bool delete_lba_from_safe_list(uint64_t lba);
+        ///
+        ///delete all user data from the media and the cache
+        ///
+        ///@return      NVM_SUCCESS or appropriate error code
+        ///
+        int delete_all();
+        ///
+        ///delete the data blocks within the given range in a brute-force way
+        ///from the media
+        ///
+        ///@param[in]  start_lba     lba that needs to be trimmed
+        ///@param[in]  delete_len value length that needs to be trimmed
+        ///@return     NVM_SUCCESS or appropriate error code
+        ///
+        int delete_range(uint64_t start_lba, uint64_t delete_len);
+        ///
+        ///delete all keys within the given range using logical range iterator
+        ///from the media
+        ///
+        ///@param[in]  start_lba   starting lba of the range
+        ///@param[in]  delete_len length of the range
+        ///@return                 NVM_SUCCESS or appropriate error code
+        ///
+        int delete_all_keys(uint64_t start_lba, uint64_t delete_len);
+        ///
+        ///batch delete protected by safe lba list. The default operation deletes
+        ///the keys from both the media and the cache.
+        ///
+        ///@param[in] iovec             array of keys to be deleted
+        ///@param[in] iov_count         number of keys which need to be deleted
+        ///@param[in] delete_from_cache delete the keys from cache if the flag
+        ///                             if the flag is true
+        ///
+        ///@return               returns 0 if successful, else returns -1
+        ///
+        int batch_delete_sync(nvm_iovec_t *iovec, uint32_t iov_count,
+                              bool delete_from_cache = true);
+        ///
+        ///batch delete without safe lba list protection. The function deletes
+        ///the keys from the media only.
+        ///
+        ///@param[in] iovec             array of keys to be deleted
+        ///@param[in] iov_count         number of keys which need to be deleted
+        ///
+        ///@return               returns 0 if successful, else returns -1
+        ///
+        int batch_delete(nvm_iovec_t *iovec, uint32_t iov_count);
 
     private:
         static const uint32_t M_KV_REVISION = 1;  ///< internal revision of KV store
-        static const uint32_t M_CAP_COUNT   = 9;  ///< number of NVM capabilities
+        static const uint32_t M_CAP_COUNT   = 10;  ///< number of NVM capabilities
         static const uint32_t M_MAX_BUFFERS_IN_POOL = 1; ///< max number of
                                                          ///< buffers in buffer
                                                          ///< pool
 
-        //disbale copy constructor and assignment operator
+        //disable copy constructor and assignment operator
         DISALLOW_COPY_AND_ASSIGN(NVM_KV_Store);
 
         NVM_KV_Pool_Mgr *m_pPoolManager;          ///< pool manager object
         NVM_KV_Layout *m_pKvLayout;               ///< address of KV store layout object
         NVM_KV_Hash_Func *m_pHashFunc;            ///< hash functions object
+        NVM_KV_Cache *m_cache;                    ///< instance of collision cache
         nvm_kv_store_device_t *m_pKvDevice;       ///< address of KV store device object
         nvm_kv_store_metadata_t *m_pStoreMetadata;///< metadata object for KV store
         uint32_t m_meta_data_buf_len;             ///< length of the buffer holding the meta data
@@ -212,6 +270,6 @@ class NVM_KV_Store
         NVM_KV_Iterator *m_iter;                  ///< all iterators in KV store
         NVM_KV_Buffer_Pool m_buffer_pool;         ///< buffer pool used by kvstore to memory allocation
         NVM_KV_Sync_List m_safe_lba_list;         ///< instance of safe LBA list
-        bool m_exp_status;                        ///<status of expiry scanners
+        bool m_exp_status;                        ///< status of expiry scanners
 };
 #endif //KV_STORE_H_

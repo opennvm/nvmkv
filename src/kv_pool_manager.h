@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------
 // NVMKV
-// |- Copyright 2012-2013 Fusion-io, Inc.
+// |- Copyright 2012-2014 Fusion-io, Inc.
 
 // This program is free software; you can redistribute it and/or modify it under
 // the terms of the GNU General Public License version 2 as published by the Free
@@ -19,12 +19,13 @@
 #define KV_POOL_MANAGER_H_
 
 #include <map>
+#include <set>
 #include <pthread.h>
 #include <stdint.h>
 #include "nvm_kv.h"
 #include "src/kv_common.h"
 #include "src/kv_layout.h"
-#include "src/kv_scanner.h"
+#include "src/kv_pool_del_manager.h"
 #include "util/kv_hash_func.h"
 #include "util/kv_bitmap.h"
 #include "util/kv_buffer_pool.h"
@@ -112,13 +113,14 @@ class NVM_KV_Pool_Mgr
         ///
         int get_pool_tag_sect(int pool_id);
         ///
-        ///checks the status of the given pool_id or pool_hash depending on the
-        ///boolean flag value
+        ///checks the status of the given pool_id
+        ///
+        ///@param[in]   pool_id the pool id
         ///
         ///@return      returns the status whether the pool is in use, not in use,
         ///             in process of deletion, or invalid
         ///
-        int check_pool_status(int pool_id, bool pool_hashed);
+        int check_pool_status(int pool_id);
         ///
         ///check if the pool id is valid
         ///
@@ -127,30 +129,14 @@ class NVM_KV_Pool_Mgr
         ///
         bool valid_poolid(int pool_id);
         ///
-        ///checks if the pool id or pool_hash is in the process of deletion
+        ///checks if the pool id is in the process of deletion
         ///
-        ///@param[in] pool_val       pool_id or pool_hash dependent on the
-        ///                          flag poolid_hashed
-        ///@param[in] poolid_hashed  if true indicates the pool_val is a hash
-        ///                          otherwise it is a pool_id
+        ///@param[in] pool_id       id of the pool to be checked for deletion
         ///
         ///@return                   returns true if the pool is being deleted
         ///                          else returns false
         ///
-        bool pool_in_del(int pool_val, bool poolid_hashed);
-        ///
-        ///checks if any pools are being deleted
-        ///
-        ///@return     returns true if delete is in progress
-        ///            else returns false
-        ///
-        bool pool_del_in_progress();
-        ///
-        ///increments the count of all entries in m_delete_pools by 1.
-        ///removes those entries with count >= 2 from the hash map and from
-        ///the bitmap.
-        ///
-        void update_del_map();
+        bool pool_in_del(int pool_id);
         ///
         ///creates pool, write in_use bitmap to media
         ///
@@ -204,6 +190,12 @@ class NVM_KV_Pool_Mgr
         ///
         int get_pool_tag(int pool_id, nvm_kv_pool_tag_t *pool_tags);
         ///
+        ///gets kvstore object
+        ///
+        ///@return  kvstore object associated with the pool manager
+        ///
+        NVM_KV_Store* get_store();
+        ///
         ///gets the layout
         ///
         NVM_KV_Layout *get_layout();
@@ -243,7 +235,40 @@ class NVM_KV_Pool_Mgr
         ///cancel pool delete scanner
         ///
         void cancel_pool_del_scanner();
-
+        ///
+        ///indicate if there are pools to be deleted or not
+        ///
+        ///@return  there are pools to be deleted or not
+        ///
+        bool has_pools_to_delete();
+        ///
+        ///copy out the current pool deletion bits to the bitmap parameter
+        ///
+        ///@param[in,out] pool_bitmap      bitmap to be set by the function
+        ///@param[in,out] delete_all_pools all pools in the bitmap need to
+        ///                                be deleted
+        ///
+        ///@return NVM_SUCCESS or appropriate error code
+        ///
+        int get_pool_deletion_bitmap(kv_bitmap_t *&pool_bitmap,
+                                     bool &delete_all_pools);
+        ///
+        ///clear certain pool bits in pool bitmaps
+        ///
+        ///@param[in] clear_pool_bitmap  the pool bits to be cleared at pool
+        ///                              bitmaps
+        ///
+        ///@return    NVM_SUCCESS or appropriate error code
+        ///
+        int clear_pool_bitmaps(kv_bitmap_t *&clear_pool_bitmap);
+        ///
+        ///clear the bit in pool bitmaps for the given pool id
+        ///
+        ///@param[in] pool_id  pool id
+        ///
+        ///@return    NVM_SUCCESS or appropriate error code
+        ///
+        int clear_pool_bitmaps(uint32_t pool_id);
     private:
         static const uint32_t M_KVSTORE_METADATA   = (1 << 0);///< update metadata
         static const uint32_t M_KV_BM_INUSE        = (1 << 1);///< update bitmap in use
@@ -283,7 +308,8 @@ class NVM_KV_Pool_Mgr
         ///                      written on the media independent of what pool
         ///                      id is.)
         ///
-        ///@return               returns 0 on success and -1 on error
+        ///@return               returns 0 on success and appropriate error
+        ///                      code on error
         ///
         int persist_store_info(uint32_t type, int pool_index);
         ///
@@ -301,8 +327,8 @@ class NVM_KV_Pool_Mgr
         ///
         uint32_t get_sector_size();
 
-        kv_delete_map_t m_delete_pools;           ///< data structure used by deletion thread
         kv_bitmap_info_t m_bitmaps;               ///< data stucture which holds in-use and deleted pools bitmap
+
         nvm_kv_store_device_t *m_pKvDevice;       ///< reference to KV store device
         nvm_kv_store_metadata_t *m_pStoreMetadata;///< reference to KV store metadata
         NVM_KV_Layout *m_pLayout;                 ///< reference to KV store layout
@@ -311,7 +337,7 @@ class NVM_KV_Pool_Mgr
         kv_tags_map_t m_tags_map;                 ///< map that stores association of <pool tag, pool id>
         uint32_t           m_poolTagSize;         ///< size of entire pool tags
         NVM_KV_Buffer_Pool m_buffer_pool;         ///< buffer pool used to allocate memory
-        NVM_KV_Scanner *m_pPoolDelThread;         ///< scanner that deletes pool
+        NVM_KV_Pool_Del_Manager *m_pPoolDelThread;///< scanner that deletes pool
         bool            m_pool_del_status;        ///< pool deletion thread status
         pthread_mutex_t m_glb_mtx;                ///< global mutex shared by pool deletion and expiry
         pthread_cond_t  m_glb_cond;               ///< global conditional variable associated with global mutex

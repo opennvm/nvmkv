@@ -22,13 +22,14 @@
 //necessary
 //
 int nvm_kv_open(int id, uint32_t version, uint32_t max_pools,
-                  uint32_t expiry)
+                uint32_t expiry, uint64_t cache_size)
 {
     try
     {
         return NVM_KV_Store_Mgr::instance(true)->kv_open(id, version,
                                                          max_pools,
-                                                         expiry);
+                                                         expiry,
+                                                         cache_size);
     }
     catch (...)
     {
@@ -195,6 +196,23 @@ int nvm_kv_get_val_len(int id, int pool_id, nvm_kv_key_t *key,
     {
        return NVM_KV_Store_Mgr::instance()->kv_get_val_len(id, pool_id, key,
                                                            key_len);
+    }
+    catch (...)
+    {
+        errno = -NVM_ERR_INTERNAL_FAILURE;
+        return -1;
+    }
+}
+//
+//gets all KV pair in one batch operation
+//
+int nvm_kv_batch_get(int id, int pool_id, nvm_kv_iovec_t *kv_iov,
+                     uint32_t iov_count)
+{
+    try
+    {
+       return NVM_KV_Store_Mgr::instance()->kv_batch_get(id, pool_id, kv_iov,
+                                                         iov_count);
     }
     catch (...)
     {

@@ -58,6 +58,7 @@ int main(int argc, char **argv)
     int                   next_element;
     uint32_t              key_len = 0;
     uint32_t              version = 0;
+    uint64_t              cache_size = 4096;
     bool                  read_exact = false;
 
     if (argc < 2)
@@ -87,7 +88,8 @@ int main(int argc, char **argv)
     /*********************/
     /* Open the KV Store */
     /*********************/
-    kv_id = nvm_kv_open(fd, version, NVM_KV_MAX_POOLS, KV_GLOBAL_EXPIRY);
+    kv_id = nvm_kv_open(fd, version, NVM_KV_MAX_POOLS,
+                        KV_GLOBAL_EXPIRY, cache_size);
     if (kv_id < 0)
     {
         printf("nvm_kv_open: failed, errno = %d\n", errno);
@@ -406,8 +408,25 @@ int main(int argc, char **argv)
         printf("nvm_kv_pool_delete: failed, errno = %d\n", errno);
         goto test_exit;
     }
-    printf("nvm_kv_pool_delete: success\n");
 
+    //Wait till pools are completely deleted
+    while (1)
+    {
+        ret = nvm_kv_get_pool_info(kv_id, pool_id, &pool_info);
+        if (ret < 0)
+        {
+            printf("nvm_kv_get_pool_info failed with errno %d\n",
+                    errno);
+            goto test_exit;
+        }
+        if (pool_info.pool_status == POOL_NOT_IN_USE)
+        {
+            printf("pool deleted completely pool status = %d\n",
+                    pool_info.pool_status);
+            break;
+        }
+    }
+    printf("nvm_kv_pool_delete: success\n");
 
 
     /**********************/

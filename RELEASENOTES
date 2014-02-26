@@ -1,0 +1,9 @@
+
+Version 1.0.0
+-------------
+
+- Added collision cache feature
+- Performance improvements for pools deletion and all keys deletion from KVStore
+- API change for nvm_kv_open, additional parameter has been added for collision cache
+- New API nvm_kv_batch_get added
+- Enhanced benchmarking tool to dump KVStore data on media

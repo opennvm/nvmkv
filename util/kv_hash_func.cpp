@@ -59,7 +59,7 @@ uint64_t NVM_KV_Hash_Func::key_hash(uint8_t *key, uint32_t key_len,
 {
     uint64_t hash = 0;
 
-    if (key == NULL || key_len == 0)
+    if (key == NULL || key_len == 0 || hash_len == 0)
     {
         return 0;
     }
@@ -143,6 +143,11 @@ uint64_t NVM_KV_Hash_Func::resolve_coll(uint8_t *key, uint32_t key_len,
 {
     uint64_t hash = 0;
     uint32_t align_left = 0;
+
+    if (key == NULL || key_len == 0 || hash_len == 0)
+    {
+        return 0;
+    }
 
     if (align)
     {

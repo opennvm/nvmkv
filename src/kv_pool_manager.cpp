@@ -1,6 +1,6 @@
 //----------------------------------------------------------------------------
 // NVMKV
-// |- Copyright 2012-2013 Fusion-io, Inc.
+// |- Copyright 2012-2014 Fusion-io, Inc.
 
 // This program is free software; you can redistribute it and/or modify it under
 // the terms of the GNU General Public License version 2 as published by the Free
@@ -50,8 +50,14 @@ NVM_KV_Pool_Mgr::~NVM_KV_Pool_Mgr()
     pthread_mutex_destroy(&m_bitmaps.mutex);
     pthread_cond_destroy(&m_glb_cond);
     pthread_mutex_destroy(&m_glb_mtx);
-    bitmap_free(m_bitmaps.in_use);
-    bitmap_free(m_bitmaps.deleted);
+    if (m_bitmaps.in_use)
+    {
+        bitmap_free(m_bitmaps.in_use);
+    }
+    if (m_bitmaps.deleted)
+    {
+        bitmap_free(m_bitmaps.deleted);
+    }
     m_tags_map.erase(m_tags_map.begin(), m_tags_map.end());
     m_buffer_pool.release_buf((char *)m_pPoolTags, m_poolTagSize);
 }
@@ -124,9 +130,11 @@ int NVM_KV_Pool_Mgr::initialize(nvm_kv_store_device_t *kv_device,
         return -NVM_ERR_OUT_OF_MEMORY;
     }
 
+    bm_size = bits_per_uint8(round32(m_pStoreMetadata->max_pools));
+    m_bitmaps.bm_len = nvm_kv_round_upto_blk(bm_size, sector_size);
+
     //pool id 0 is in use for default pools
     bitmap_set(m_bitmaps.in_use, 0);
-    bm_size = bits_per_uint8(round32(m_pStoreMetadata->max_pools));
     del_bm_lba = m_pLayout->get_inuse_bm_lba() +
                  (nvm_kv_round_upto_blk(bm_size, sector_size) / sector_size);
     m_pLayout->set_del_bm_lba(del_bm_lba);
@@ -162,7 +170,7 @@ int NVM_KV_Pool_Mgr::init_pool_del_scanner(NVM_KV_Store *kv_store)
         fprintf(stderr, "Error, allocating pool deletion manager\n");
         return -NVM_ERR_OUT_OF_MEMORY;
     }
-    return m_pPoolDelThread->initialize(KV_POOL_DEL_ITER);
+    return m_pPoolDelThread->initialize();
 }
 //
 //load pools specific information from media onto memory
@@ -174,8 +182,6 @@ int NVM_KV_Pool_Mgr::restore()
     int ret_code = NVM_SUCCESS;
     int num_iovs = 2;//only 2 IOVs are needed for the read
     int iov_count = 0;
-    kv_delete_map_entry_t *entry = NULL;
-    uint32_t pool_hash = 0;
     uint32_t sector_size = get_sector_size();
 
     //maximum number of IOVs that is supported by the device is allocated
@@ -187,6 +193,7 @@ int NVM_KV_Pool_Mgr::restore()
             before restoring bitmaps\n");
         return -NVM_ERR_OUT_OF_MEMORY;
     }
+
     iovec[iov_count].iov_base = (uint64_t) m_bitmaps.in_use;
     iovec[iov_count].iov_len = nvm_kv_round_upto_blk( \
                                bits_per_uint8(
@@ -241,25 +248,7 @@ int NVM_KV_Pool_Mgr::restore()
         //deletion
         if (bitmap_test(m_bitmaps.deleted, i))
         {
-            //This pool id was marked for deletion. Make sure that it is
-            //set in the in-use bitmap as well and add an entry corresponding
-            //to it in hash map for pools in deletion.
-            if (bitmap_test(m_bitmaps.in_use, i))
-            {
-                pool_hash = get_poolid_hash(i);
-                entry = new(std::nothrow) kv_delete_map_entry_t();
-                if (entry == NULL)
-                {
-                    ret_code = -NVM_ERR_OUT_OF_MEMORY;
-                    goto end_restore;
-                }
-                m_delete_pools[pool_hash] = entry;
-
-                //This pool_id starts out having seen 0 scanner passes
-                //through drive
-                (*entry)[i] = 0;
-            }
-            else
+            if (!bitmap_test(m_bitmaps.in_use, i))
             {
                 //As the in-use bitmap does not have this pool id set,
                 //there is some inconsistency problem as we expect both in-use
@@ -274,6 +263,7 @@ int NVM_KV_Pool_Mgr::restore()
     }
 
 end_restore:
+
     delete iovec;
     return ret_code;
 }
@@ -314,7 +304,7 @@ int NVM_KV_Pool_Mgr::create_pool(nvm_kv_pool_tag_t *pool_tag)
     if (pool_id == BM_FULL)
     {
         fprintf(stderr, "maximum pools reached\n");
-        retval = -NVM_ERR_INTERNAL_FAILURE;
+        retval = -NVM_ERR_INVALID_INPUT;
         goto end_pool_manager_create;
     }
     if (set_pool_tag(pool_id, pool_tag) < 0)
@@ -356,10 +346,10 @@ end_pool_manager_create:
 int NVM_KV_Pool_Mgr::delete_pool(int pool_id)
 {
     int retval = NVM_SUCCESS;
-    kv_delete_map_entry_t *entry = NULL;
     kv_delete_map_t::iterator it;
-    uint32_t pool_hash = 0;
     int i = 0;
+    set<uint32_t> pool_id_list;
+    NVM_KV_Cache* cache = get_store()->get_cache();
 
     //Go over all the pools existing in the in-use bitmap and mark them in
     //in delete bitmap, skip the default pool id i.e, 0.
@@ -371,7 +361,7 @@ int NVM_KV_Pool_Mgr::delete_pool(int pool_id)
     {
         //If the call is for deleting a specific pool
         //and pool id is not valid return error
-        int pool_id_status = check_pool_status(pool_id, false);
+        int pool_id_status = check_pool_status(pool_id);
 
         if (pool_id_status == POOL_IS_INVALID || pool_id_status ==
             POOL_NOT_IN_USE)
@@ -403,26 +393,7 @@ int NVM_KV_Pool_Mgr::delete_pool(int pool_id)
             memset(pool_tag_offset, 0, sizeof(nvm_kv_pool_tag_t));
             m_tags_map.erase((char *) &pool_tag);
 
-            pool_hash = get_poolid_hash(i);
-            it = m_delete_pools.find(pool_hash);
-            if (it == m_delete_pools.end())
-            {
-                entry = new(std::nothrow) kv_delete_map_entry_t();
-                if (entry == NULL)
-                {
-                    retval = -NVM_ERR_OUT_OF_MEMORY;
-                    goto pool_manager_delete_pool_exit;
-                }
-                m_delete_pools[pool_hash] = entry;
-            }
-            else
-            {
-                entry = it->second;
-            }
             bitmap_set(m_bitmaps.deleted, i);
-            //This pool_id starts out having seen 0 scanner passes through
-            //the drive
-            (*entry)[i] = 0;
         }
         i++;
     } while ((i < m_pStoreMetadata->max_pools) && (pool_id == M_POOLID_ALL));
@@ -445,75 +416,46 @@ int NVM_KV_Pool_Mgr::delete_pool(int pool_id)
         {
             if (bitmap_test(m_bitmaps.in_use, i))
             {
-               uint32_t pool_hash = get_poolid_hash(i);
-               delete m_delete_pools[pool_hash];
                bitmap_clear(m_bitmaps.deleted, i);
             }
             i++;
         } while ((i < m_pStoreMetadata->max_pools) &&
                  (pool_id == M_POOLID_ALL));
+
         goto pool_manager_delete_pool_exit;
     }
+
     m_pPoolDelThread->restart_scanner_if_asleep();
 
 pool_manager_delete_pool_exit:
+
     pthread_mutex_unlock(&m_bitmaps.mutex);
     m_pPoolDelThread->unlock_mutex();
-    return retval;
-}
-//
-//does cleanup of deleted entries after scanner pass
-//
-void NVM_KV_Pool_Mgr::update_del_map()
-{
-    int pool_id = 0;
-    kv_delete_map_entry_t *entry = NULL;
-    kv_delete_map_t::iterator hash_iter;
-    kv_delete_map_entry_t::iterator id_iter;
 
-    pthread_mutex_lock(&m_bitmaps.mutex);
-    hash_iter = m_delete_pools.begin();
-    while (hash_iter != m_delete_pools.end())
+    if (retval == NVM_SUCCESS)
     {
-        //We maintain invariant that entries in m_delete_pools are not NULL
-        entry = hash_iter->second;
-        id_iter = entry->begin();
-        while (id_iter != entry->end())
+        //delete cache entry associated with the pool(s)
+        if (cache)
         {
-            pool_id = id_iter->first;
-            //Increment count
-            (id_iter->second)++;
-            //Erase if >= 2 passes have occurred.
-            if (id_iter->second >= 2)
+            if (pool_id == M_POOLID_ALL)
             {
-                //Using post increment ensures we erase current entry
-                entry->erase(id_iter++);
-                bitmap_clear(m_bitmaps.deleted, pool_id);
-                bitmap_clear(m_bitmaps.in_use, pool_id);
-                m_pStoreMetadata->total_no_pools--;
-                persist_store_info((M_KVSTORE_METADATA | M_KV_BM_DELETED |
-                                    M_KV_BM_INUSE), pool_id);
+                //delete all pools except for the default pool
+                cache->kv_cache_delete_all_pools();
             }
             else
             {
-                ++id_iter;
+                pool_id_list.insert(pool_id);
+                cache->kv_cache_delete_pools(pool_id_list);
             }
         }
-        if (entry->empty())
-        {
-            delete entry;
-            //Again post increment ensures we erase current entry
-            m_delete_pools.erase(hash_iter);
-        }
-        ++hash_iter;
     }
-    pthread_mutex_unlock(&m_bitmaps.mutex);
+    return retval;
 }
 //
 //checks the status of the given pool_id or pool_hash depending on the boolean
 //flag value
 //
-int NVM_KV_Pool_Mgr::check_pool_status(int pool_id, bool poolid_hashed)
+int NVM_KV_Pool_Mgr::check_pool_status(int pool_id)
 {
     bool is_pool_in_del;
     bool is_valid_poolid;
@@ -523,7 +465,7 @@ int NVM_KV_Pool_Mgr::check_pool_status(int pool_id, bool poolid_hashed)
         return POOL_IS_INVALID;
     }
 
-    is_pool_in_del = pool_in_del(pool_id, poolid_hashed);
+    is_pool_in_del = pool_in_del(pool_id);
     is_valid_poolid = valid_poolid(pool_id);
 
     if (is_valid_poolid && !is_pool_in_del)
@@ -544,31 +486,24 @@ bool NVM_KV_Pool_Mgr::valid_poolid(int pool_id)
 {
     bool retval = false;
 
-    if (m_pStoreMetadata->max_pools == 0)
+    if (pool_id == get_default_poolid())
     {
-        if (pool_id == M_DEFAULT_POOL_ID)
-        {
-            // There are no pools created and the id
-            // is default
-            retval = true;
-        }
+        return true;
     }
-    else
+
+    pthread_mutex_lock(&m_bitmaps.mutex);
+    if (bitmap_test(m_bitmaps.in_use, pool_id))
     {
-        pthread_mutex_lock(&m_bitmaps.mutex);
-        if (bitmap_test(m_bitmaps.in_use, pool_id))
-        {
-            retval = true;
-        }
-        pthread_mutex_unlock(&m_bitmaps.mutex);
+        retval = true;
     }
+    pthread_mutex_unlock(&m_bitmaps.mutex);
 
     return retval;
 }
 //
-//checks if the pool id or pool hash is in the process of deletion
+//checks if the pool id is in the process of deletion
 //
-bool NVM_KV_Pool_Mgr::pool_in_del(int pool_val, bool poolid_hashed)
+bool NVM_KV_Pool_Mgr::pool_in_del(int pool_id)
 {
     bool retval = false;
 
@@ -576,33 +511,12 @@ bool NVM_KV_Pool_Mgr::pool_in_del(int pool_val, bool poolid_hashed)
     {
         //if max pools is 0, then bitmaps wont be created
         pthread_mutex_lock(&m_bitmaps.mutex);
-        if (!poolid_hashed)
+        if (bitmap_test(m_bitmaps.in_use, pool_id))
         {
-            if (bitmap_test(m_bitmaps.in_use, pool_val))
-            {
-                retval = bitmap_test(m_bitmaps.deleted, pool_val);
-            }
-        }
-        else
-        {
-             retval = ((m_delete_pools.find(pool_val) ==
-                m_delete_pools.end())? false : true);
+            retval = bitmap_test(m_bitmaps.deleted, pool_id);
         }
         pthread_mutex_unlock(&m_bitmaps.mutex);
     }
-
-    return retval;
-}
-//
-//returns true iff there are any pending deletes
-//
-bool NVM_KV_Pool_Mgr::pool_del_in_progress()
-{
-    bool retval = false;
-
-    pthread_mutex_lock(&m_bitmaps.mutex);
-    retval = !m_delete_pools.empty();
-    pthread_mutex_unlock(&m_bitmaps.mutex);
 
     return retval;
 }
@@ -686,7 +600,7 @@ int NVM_KV_Pool_Mgr::get_pool_tag(int pool_id, nvm_kv_pool_tag_t *pool_tags)
 
     pool_tag_offset = (char *) m_pPoolTags +
                       pool_id * sizeof(nvm_kv_pool_tag_t);
-    if (check_pool_status(pool_id, false) == POOL_IN_USE)
+    if (check_pool_status(pool_id) == POOL_IN_USE)
     {
         memcpy(pool_tags, pool_tag_offset, sizeof(nvm_kv_pool_tag_t));
     }
@@ -745,7 +659,13 @@ int NVM_KV_Pool_Mgr::persist_store_info(uint32_t type, int pool_index)
             //Update the complete pool_tags
             //pool_tags are updated separately since num of IOVs
             //might not be enough for max_pools of 1M
-            persist_pool_tags(iovec);
+            ret_code = persist_pool_tags(iovec);
+            if (ret_code < 0)
+            {
+                fprintf(stderr, "Error, couldn't write pool tags to "
+                        "media: %d\n", errno);
+                goto persist_store_info_exit;
+            }
         }
         else
         {
@@ -831,12 +751,18 @@ int NVM_KV_Pool_Mgr::persist_store_info(uint32_t type, int pool_index)
     }
 
     ret_code = nvm_writev(m_pKvDevice, iovec, iov_count, true);
-    delete iovec;
     if (ret_code < 0)
     {
         fprintf(stderr, "Error, atomic write failed: %d\n", errno);
+    }
+
+persist_store_info_exit:
+    delete iovec;
+    if (ret_code < 0)
+    {
         return ret_code;
     }
+
     return NVM_SUCCESS;
 }
 //
@@ -850,7 +776,10 @@ int NVM_KV_Pool_Mgr::persist_pool_tags(nvm_iovec_t *iov)
     int sector_size = get_sector_size();
     int count = 0;
     int iov_count = 0;
-    int num_iovs = m_pKvDevice->capabilities.nvm_max_num_iovs;
+    int max_num_iovs = m_pKvDevice->capabilities.nvm_max_num_iovs;
+    uint32_t atomic_write_max_total_size =
+        m_pKvDevice->capabilities.nvm_atomic_write_max_total_size;
+    uint32_t total_len_per_write = 0;
 
     remaining_len = m_poolTagSize;
 
@@ -859,15 +788,21 @@ int NVM_KV_Pool_Mgr::persist_pool_tags(nvm_iovec_t *iov)
         m_pKvDevice->capabilities.nvm_max_write_size_per_iov;
     while (remaining_len)
     {
+        //For each write make sure we don't exceed max allowed size
+        //and max allowed IOVs
         iov_count = 0;
+        total_len_per_write = 0;
 
-        while (remaining_len && iov_count < num_iovs)
+        while (remaining_len && iov_count < max_num_iovs
+               && total_len_per_write < atomic_write_max_total_size)
         {
+            //Writing max allowed or less per IOV
             int vector_size = (remaining_len < max_write_size_per_iov) ?
                 remaining_len : max_write_size_per_iov;
+            total_len_per_write += vector_size;
             iov[iov_count].iov_base = (uint64_t) m_pPoolTags + (count *
                     max_write_size_per_iov);
-            //vector_size in number of packets
+            //vector_size in number of bytes
             iov[iov_count].iov_len = vector_size;
             iov[iov_count].iov_lba = m_pLayout->get_pool_tags_lba() + (count
                 * (max_write_size_per_iov / sector_size));
@@ -882,7 +817,6 @@ int NVM_KV_Pool_Mgr::persist_pool_tags(nvm_iovec_t *iov)
             fprintf(stderr, "Error, atomic write failed: %d\n", errno);
             return ret_code;
         }
-
     }
 
     return NVM_SUCCESS;
@@ -915,3 +849,135 @@ void NVM_KV_Pool_Mgr::set_pool_del_status(bool mode)
 {
     m_pool_del_status = mode;
 }
+//
+//gets kvstore object
+//
+NVM_KV_Store* NVM_KV_Pool_Mgr::get_store()
+{
+    return m_pPoolDelThread->get_store();
+}
+//
+//return if there are pools to be deleted or not
+//
+bool NVM_KV_Pool_Mgr::has_pools_to_delete()
+{
+    bool has_pool_to_delete;
+
+    pthread_mutex_lock(&m_bitmaps.mutex);
+    if (bitmap_ffs(m_bitmaps.deleted, m_pStoreMetadata->max_pools) == BM_FULL)
+    {
+        has_pool_to_delete = false;
+    }
+    else
+    {
+        has_pool_to_delete = true;
+    }
+    pthread_mutex_unlock(&m_bitmaps.mutex);
+
+    return has_pool_to_delete;
+}
+//
+//copy out the current pool deletion bits to the bitmap parameter
+//
+int NVM_KV_Pool_Mgr::get_pool_deletion_bitmap(kv_bitmap_t *&pool_bitmap,
+                                              bool &delete_all_pools)
+{
+    kv_bitmap_t *tmp_bitmap = NULL;
+
+    if (posix_memalign((void **) &tmp_bitmap, get_sector_size(),
+        m_bitmaps.bm_len) != 0)
+    {
+        fprintf(stderr, "Error, allocation failed while checking bitmaps\n");
+        return -NVM_ERR_OUT_OF_MEMORY;;
+    }
+
+    pthread_mutex_lock(&m_bitmaps.mutex);
+    //check if all user pools need to be deleted
+    memcpy(tmp_bitmap, m_bitmaps.in_use, m_bitmaps.bm_len);
+    //clear the bit for the default pool
+    bitmap_clear(tmp_bitmap, 0);
+    //compare temp bitmap with the deletion bitmap. If they are the same, set
+    //the flag to indicate there was a request to delete all user created pools
+    if (memcmp(tmp_bitmap, m_bitmaps.deleted, m_bitmaps.bm_len))
+    {
+        delete_all_pools = false;
+    }
+    else
+    {
+        delete_all_pools = true;
+    }
+    memcpy(pool_bitmap, m_bitmaps.deleted, m_bitmaps.bm_len);
+    pthread_mutex_unlock(&m_bitmaps.mutex);
+
+    free(tmp_bitmap);
+
+    return NVM_SUCCESS;
+}
+//
+//clear certain pool bits in pool bitmaps
+//
+int NVM_KV_Pool_Mgr::clear_pool_bitmaps(kv_bitmap_t *&clear_pool_bitmap)
+{
+    int ret_code = NVM_SUCCESS;
+    bool deleted_pool_bitmap_cleared;
+    uint32_t max_pools = m_pStoreMetadata->max_pools;
+
+    pthread_mutex_lock(&m_bitmaps.mutex);
+
+    //if all of pools in the current pool deletion bit map will be cleared,
+    //set the has_pools_to_delete to false to indicate that no more pool
+    //needs to be deleted afterward.
+    if (!memcmp(m_bitmaps.deleted, clear_pool_bitmap, m_bitmaps.bm_len))
+    {
+        memset(m_bitmaps.deleted, 0, m_bitmaps.bm_len);
+        deleted_pool_bitmap_cleared = true;
+    }
+    else
+    {
+        deleted_pool_bitmap_cleared = false;
+    }
+
+    for (uint32_t i = 1; i < max_pools; i++)
+    {
+        if (bitmap_test(clear_pool_bitmap, i))
+        {
+            if (!deleted_pool_bitmap_cleared)
+            {
+                bitmap_clear(m_bitmaps.deleted, i);
+            }
+            bitmap_clear(m_bitmaps.in_use, i);
+            m_pStoreMetadata->total_no_pools--;
+        }
+    }
+
+    if ((ret_code = persist_store_info((M_KVSTORE_METADATA | M_KV_BM_DELETED |
+                                        M_KV_BM_INUSE), -1)) != NVM_SUCCESS)
+    {
+        return ret_code;
+    }
+
+    pthread_mutex_unlock(&m_bitmaps.mutex);
+
+    return ret_code;
+}
+//
+//clear the bit in pool bitmaps for the given pool id
+//
+int NVM_KV_Pool_Mgr::clear_pool_bitmaps(uint32_t pool_id)
+{
+    int ret_code = NVM_SUCCESS;
+
+    pthread_mutex_lock(&m_bitmaps.mutex);
+
+    bitmap_clear(m_bitmaps.deleted, pool_id);
+    bitmap_clear(m_bitmaps.in_use, pool_id);
+    m_pStoreMetadata->total_no_pools--;
+
+    ret_code = persist_store_info((M_KVSTORE_METADATA | M_KV_BM_DELETED |
+                        M_KV_BM_INUSE), pool_id);
+
+    pthread_mutex_unlock(&m_bitmaps.mutex);
+
+    return ret_code;
+}
+

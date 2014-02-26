@@ -21,6 +21,10 @@
 #include <vector>
 #include <stdint.h>
 #include <string>
+
+#include "../src/kv_layout.h"
+#include "../src/kv_common.h"
+
 using namespace std;
 #define BLKPBSZGET _IO(0x12,123) //for ioctl to get sector size
 //
@@ -64,6 +68,7 @@ class KvOptions
         m_functionalTest = false;
         m_perfTest = false;
         m_smokeTest = false;
+        m_dumpData = false;
         m_replacePuts = false;
         m_readExact = false;
         m_verify = false;
@@ -74,6 +79,7 @@ class KvOptions
         m_expiryInSecs = 0;
         m_apiVersion = 0;
         m_numIos = 0;
+        m_cacheSize = 0;
         m_fd = -1;
     }
     //
@@ -103,6 +109,7 @@ class KvOptions
     //
     //@member variables
     //    m_deviceName       - device name
+    //    m_dumpDataFilename - name of file into which kvstore data will be dumped
     //    m_valSize          - value size in terms of sectors or bytes
     //    m_numIos           - total number of ios (key/value pair count)
     //    m_verify           - if set to true kv_get needs to be verified
@@ -110,6 +117,7 @@ class KvOptions
     //    m_smokeTest        - if set to true smoke tests are executed
     //    m_functionalTest   - if set to true functional tests are executed
     //    m_perfTest         - if set to true performance tests are executed
+    //    m_dumpData         - if set to true kvstore data is dumped
     //    m_replacePuts      - if set to true set replace flag to true in puts
     //    m_readExact        - if set to true read exact value_len that is
     //                         written on media in kv_get
@@ -138,9 +146,11 @@ class KvOptions
     //
     char m_confFile[M_MAX_STR_SIZE];
     char m_deviceName[M_MAX_STR_SIZE];
+    char m_dumpDataFilename[M_MAX_STR_SIZE];
     bool m_smokeTest;
     bool m_perfTest;
     bool m_functionalTest;
+    bool m_dumpData;
     unsigned int m_valSize;
     int m_numIos;
     bool m_verify;
@@ -155,6 +165,7 @@ class KvOptions
     bool m_getPoolInfo;
     uint32_t m_expiry;
     uint32_t m_expiryInSecs;
+    uint64_t m_cacheSize;
     int m_fd;
     bool m_sectorAligned;
     uint32_t m_smallValue;
@@ -336,10 +347,59 @@ class KvTest
     //
     static bool testSmoke(KvOptions &options);
     //
+    //@dumpData       - dump kvstore data
+    //@options        - command line param
+    //@return         - return true if succeeded else return false
+    //
+    static bool dumpData(KvOptions &options);
+    //
     //@constants
     //@M_MAX_DEV_NAME_SIZE  - maximum device name size
     //
     static const int M_MAX_DEV_NAME_SIZE = 256;
+private:
+    //
+    //@dump_metadata  - writes data from metadata sector to file
+    //@kv_layout      - KV store layout object
+    //@handle         - NVM handle to block device
+    //@buf            - buffer to read metadata from device
+    //@dev_fd         - fd for block device
+    //@sector_size    - sector size of block device
+    //@store_metadata - pointer to structure for storing metadata
+    //@dump_file      - file stream for dumping metadata
+    //@return         - return true if succeeded else return false
+    //
+    bool dump_metadata(NVM_KV_Layout *kv_layout, nvm_handle_t handle, void *buf,
+                       int dev_fd, uint32_t sector_size,
+                       nvm_kv_store_metadata_t *store_metadata,
+                       std::ofstream &dump_file);
+    //
+    //@dump_kv_pair_data  - writes a kv pair's data to file
+    //@buf                - buffer to read data from
+    //@kv_pair_start_lba  - lba where the kv pair starts
+    //@kv_pair_size       - size of the kv pair in sectors
+    //@out_file           - file stream for writing to
+    //@sector_size        - sector size of block device
+    //
+    void dump_kv_pair_data(void *buf, uint64_t kv_pair_start_lba,
+                           uint32_t kv_pair_size, std::ofstream &out_file,
+                           uint32_t sector_size);
+    //
+    //@dump_kv_pairs  - writes kv pairs to file
+    //@kv_layout      - KV store layout object
+    //@handle         - NVM handle to block device
+    //@buf            - buffer to read data from device
+    //@dev_fd         - fd for block device
+    //@store_metadata - pointer to structure for storing metadata
+    //@dump_file      - file stream for dumping metadata
+    //@sector_size    - sector size of block device
+    //@lba_max        - last lba of device
+    //@return         - return true if succeeded else return false
+    //
+    bool dump_kv_pairs(NVM_KV_Layout *kv_layout, nvm_handle_t handle, void *buf,
+                       int dev_fd, nvm_kv_store_metadata_t *store_metadata,
+                       std::ofstream &dump_file, uint32_t sector_size,
+                       uint64_t lba_max);
 };
 
 //

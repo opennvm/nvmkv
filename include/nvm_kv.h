@@ -23,9 +23,10 @@
 #include <pthread.h>
 #include <stdint.h>
 
-#define NVM_KV_MAX_KEY_SIZE   128        ///< Max key size in bytes
-#define NVM_KV_MAX_VALUE_SIZE 1047552    ///< Max value size in bytes (1MiB - 1KiB)
+#define NVM_KV_MAX_KEY_SIZE   128        ///< max key size in bytes
+#define NVM_KV_MAX_VALUE_SIZE 1047552    ///< max value size in bytes (1MiB - 1KiB)
 #define NVM_KV_MAX_POOLS      1048576    ///< currently supported max pools
+#define NVM_KV_MIN_POOLS      1          ///< mininum number of pools in the store
 #define NVM_KV_MAX_ITERATORS  128        ///< max iterators supported over all pools
 #ifdef __cplusplus
 extern "C"
@@ -89,7 +90,8 @@ extern "C"
         uint32_t max_pools;     ///< maximum number of pools
         uint32_t expiry_mode;   ///< KV store expiry mode nvm_kv_expiry_t enum value
         uint32_t global_expiry; ///< global expiry value for KV store
-        uint32_t reserved;      ///< padding
+        uint32_t reserved1;     ///< reserved
+        uint64_t cache_size;    ///< cache size in bytes
         uint64_t num_keys;      ///< total number of keys in KV store
         uint64_t free_space;    ///< available free space in bytes
     } nvm_kv_store_info_t;
@@ -123,20 +125,22 @@ extern "C"
     ///at 0th LBA. This api needs to be called before using any other kvstore
     ///apis
     ///
-    ///@param[in] id        KV store id
-    ///@param[in] version   version of the KV store API
-    ///@param[in] max_pools maximum number of pools that can be created
-    ///                     with in KV store, this cannot be changed once
-    ///                     KV store is created
-    ///@param[in] expiry    expiry support. Expected values:
-    ///                     KV_DISABLE_EXPIRY(0):   Disable the expiry
-    ///                     KV_ARBITRARY_EXPIRY(1): Enable arbitraty expiry
-    ///                     KV_GLOBAL_EXPIRY(2):    Enable global expiry
-    ///@return              KV store id on success or -1 on failure,
-    ///                     appropriate error code is set on error
+    ///@param[in] id         KV store id
+    ///@param[in] version    version of the KV store API
+    ///@param[in] max_pools  maximum number of pools that can be created
+    ///                      with in KV store, this cannot be changed once
+    ///                      KV store is created
+    ///@param[in] expiry     expiry support. Expected values:
+    ///                      KV_DISABLE_EXPIRY(0):   Disable the expiry
+    ///                      KV_ARBITRARY_EXPIRY(1): Enable arbitraty expiry
+    ///                      KV_GLOBAL_EXPIRY(2):    Enable global expiry
+    ///@param[in] cache_size amount of memory (in bytes) that needs to be
+    ///                      allocated for the cache
+    ///@return               KV store id on success or -1 on failure,
+    ///                      appropriate error code is set on error
     ///
     int nvm_kv_open(int id, uint32_t version, uint32_t max_pools,
-                    uint32_t expiry);
+                    uint32_t expiry, uint64_t cache_size);
     ///
     ///create a new pool in the KV store
     ///
@@ -306,6 +310,19 @@ extern "C"
     ///
     int nvm_kv_get_val_len(int id, int pool_id, nvm_kv_key_t *key,
                            uint32_t key_len);
+    ///
+    ///gets key/value pairs in one batch operation
+    ///
+    ///@param[in]     kv_id     KV store id
+    ///@param[in]     pool_id   pool id, if set to 0 operation is done on
+    ///                         default pool
+    ///@param[in,out] kv_iov    vector of key value pair
+    ///@param[in]     iov_count length of vector
+    ///@return                  returns 0 on success or (-1) on
+    ///                         error and appropriate errno is set
+    ///
+    int nvm_kv_batch_get(int kv_id, int pool_id, nvm_kv_iovec_t *kv_iov,
+                         uint32_t iov_count);
     ///
     ///puts key/value pairs in one batch operation
     ///

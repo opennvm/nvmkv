@@ -61,7 +61,7 @@ class NVM_KV_Sync_List
         bool delete_entry(uint64_t entry);
 
     private:
-        //disbale copy constructor and assignment operator
+        //disable copy constructor and assignment operator
         DISALLOW_COPY_AND_ASSIGN(NVM_KV_Sync_List);
 
         pthread_mutex_t m_mtx;          ///< pthread mutex for thread safety
