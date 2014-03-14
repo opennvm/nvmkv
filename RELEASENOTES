@@ -7,3 +7,5 @@ Version 1.0.0
 - API change for nvm_kv_open, additional parameter has been added for collision cache
 - New API nvm_kv_batch_get added
 - Enhanced benchmarking tool to dump KVStore data on media
+- Requires NVM Primitives 1.0.0 in order to build. It can be downloaded from
+  https://support.fusionio.com
